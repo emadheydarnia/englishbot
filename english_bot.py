@@ -47,6 +47,17 @@ def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS activity_log (
+                id SERIAL PRIMARY KEY,
+                telegram_id BIGINT,
+                name VARCHAR(100),
+                student_class VARCHAR(50),
+                action VARCHAR(50),
+                detail TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         print("DB init error: " + str(e))
@@ -88,6 +99,66 @@ def get_all_stats():
         return rows
     except Exception as e:
         print("DB stats error: " + str(e))
+        return []
+
+
+def log_activity(telegram_id, name, student_class, action, detail=""):
+    """ثبت ریز فعالیت‌ها"""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO activity_log (telegram_id,name,student_class,action,detail) VALUES (%s,%s,%s,%s,%s)",
+            (telegram_id, name or str(telegram_id), student_class or "?", action, detail[:200])
+        )
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        print("DB log error: " + str(e))
+
+def get_my_stats(telegram_id):
+    """آمار یه دانش‌آموز برای خودش"""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT activity_type, topic, score, total, level, created_at
+            FROM students WHERE telegram_id=%s ORDER BY created_at DESC LIMIT 20
+        """, (telegram_id,))
+        rows = cur.fetchall()
+        cur.execute("""
+            SELECT COUNT(*) as total,
+                   ROUND(AVG(CASE WHEN total>0 THEN score::float/total*100 END)::numeric,1) as avg
+            FROM students WHERE telegram_id=%s
+        """, (telegram_id,))
+        summary = cur.fetchone()
+        cur.close(); conn.close()
+        return rows, summary
+    except Exception as e:
+        print("DB my stats error: " + str(e))
+        return [], None
+
+def get_full_report(target_id=None):
+    """گزارش ریز فعالیت‌ها برای معلم"""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        if target_id:
+            cur.execute("""
+                SELECT name, student_class, action, detail, created_at
+                FROM activity_log WHERE telegram_id=%s
+                ORDER BY created_at DESC LIMIT 50
+            """, (target_id,))
+        else:
+            cur.execute("""
+                SELECT name, student_class, action, detail, created_at
+                FROM activity_log
+                ORDER BY created_at DESC LIMIT 50
+            """)
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+        return rows
+    except Exception as e:
+        print("DB full report error: " + str(e))
         return []
 
 def get_today_stats():
@@ -1324,6 +1395,7 @@ def ai_end_keyboard():
 def main_reply_keyboard():
     """Reply keyboard — همیشه پایین صفحه"""
     return ReplyKeyboardMarkup([
+        ["📊 My Score", "📈 My Progress"],
         ["🏠 Main Menu"],
     ], resize_keyboard=True, one_time_keyboard=False)
 
@@ -1541,6 +1613,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "سلام " + update.effective_user.first_name + " عزیز! به Emad Eng Lab خوش اومدی 🎓",
         reply_markup=main_reply_keyboard(),
     )
+    log_activity(update.effective_user.id, update.effective_user.first_name, "", "start", "Bot opened")
     await update.message.reply_text(
         "Please select your group / گروه خود را انتخاب کنید 👇",
         reply_markup=main_menu_keyboard(),
@@ -1745,6 +1818,7 @@ Student translates German sentences into English.
         session["topic"] = topic_key
         session["active"] = True
         session["system_prompt"] = topic["prompt"]
+        log_activity(user_id, "", "", "ai_start", topic_key)
 
         is_german = topic_key.startswith("de_") or topic_key.startswith("dei_") or locals().get("is_german_override", False)
         if is_german:
@@ -1840,6 +1914,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # شناسایی دکمه‌های reply keyboard پایین صفحه
     # کلید Main Menu — همه session ها رو می‌بنده و برمیگرده
+    if text == "📊 My Score":
+        await myscore_cmd(update, context)
+        return
+
+    if text == "📈 My Progress":
+        await myprogress_cmd(update, context)
+        return
+
     if text == "🏠 Main Menu":
         # اگه exam فعاله
         if state.get("active"):
@@ -2008,6 +2090,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(resp_text)
 
             if is_end:
+                log_activity(user_id, ai_state.get("student_name","?"), ai_state.get("student_class","?"), "ai_end", session.get("topic",""))
                 # ذخیره session AI در دیتابیس
                 ai_state = get_state(context, user_id)
                 save_activity(
@@ -2039,6 +2122,121 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ── Main ───────────────────────────────────────────────────────────────────────
+
+async def myscore_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمرات خود دانش‌آموز"""
+    user_id = update.effective_user.id
+    rows, summary = get_my_stats(user_id)
+    if not rows:
+        await update.message.reply_text("هنوز هیچ فعالیتی ثبت نشده. برو یه exam بده! 💪")
+        return
+
+    name = rows[0].get("name", "") if rows else ""
+    exams = [r for r in rows if r["activity_type"] == "exam" and r["score"] is not None]
+    ai_sess = [r for r in rows if r["activity_type"] == "ai_session"]
+
+    msg = "📊 نتایج من\n" + "━" * 28 + "\n"
+    if summary and summary["avg"]:
+        msg += "📈 میانگین کلی: " + str(summary["avg"]) + "%\n\n"
+
+    if exams:
+        msg += "📝 Exam ها:\n"
+        for r in exams[:10]:
+            pct = round(r["score"] / r["total"] * 100) if r["total"] else 0
+            emoji = "✅" if pct >= 70 else "⚠️" if pct >= 50 else "❌"
+            days_ago = (datetime.now() - r["created_at"]).days
+            date_str = "امروز" if days_ago == 0 else "دیروز" if days_ago == 1 else str(days_ago) + " روز پیش"
+            msg += "  " + emoji + " " + str(r["topic"])[:30] + " — " + str(r["score"]) + "/" + str(r["total"]) + " (" + str(pct) + "%) | " + date_str + "\n"
+
+    if ai_sess:
+        msg += "\n🤖 AI Sessions:\n"
+        for r in ai_sess[:5]:
+            days_ago = (datetime.now() - r["created_at"]).days
+            date_str = "امروز" if days_ago == 0 else "دیروز" if days_ago == 1 else str(days_ago) + " روز پیش"
+            level = " | " + r["level"] if r["level"] else ""
+            msg += "  🔹 " + str(r["topic"])[:30] + level + " | " + date_str + "\n"
+
+    await update.message.reply_text(msg)
+
+async def myprogress_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """پیشرفت دانش‌آموز"""
+    user_id = update.effective_user.id
+    rows, summary = get_my_stats(user_id)
+    if not rows:
+        await update.message.reply_text("هنوز فعالیتی ثبت نشده! 🎯\nبرو یه exam بده یا AI رو امتحان کن.")
+        return
+
+    exams = [r for r in rows if r["activity_type"] == "exam" and r["score"] is not None]
+    ai_sess = [r for r in rows if r["activity_type"] == "ai_session"]
+    level_tests = [r for r in rows if r["level"]]
+
+    msg = "📈 پیشرفت من\n" + "━" * 28 + "\n"
+
+    # سطح فعلی
+    if level_tests:
+        msg += "🎓 سطح فعلی: " + str(level_tests[0]["level"]) + "\n\n"
+
+    # آمار exam ها
+    if exams:
+        scores = [r["score"] / r["total"] * 100 for r in exams if r["total"]]
+        msg += "📝 Exams (" + str(len(exams)) + " عدد):\n"
+        for r in exams[:5]:
+            pct = round(r["score"] / r["total"] * 100) if r["total"] else 0
+            emoji = "✅" if pct >= 70 else "⚠️" if pct >= 50 else "❌"
+            days_ago = (datetime.now() - r["created_at"]).days
+            date_str = "امروز" if days_ago == 0 else "دیروز" if days_ago == 1 else str(days_ago) + " روز پیش"
+            msg += "  " + emoji + " " + str(r["topic"])[:25] + " — " + str(pct) + "% | " + date_str + "\n"
+
+        if scores:
+            msg += "\n🎯 بهترین نمره: " + str(round(max(scores))) + "%\n"
+            msg += "📊 میانگین کلی: " + str(round(sum(scores)/len(scores))) + "%\n"
+            if len(scores) >= 2:
+                trend = scores[0] - scores[-1]
+                if trend > 5:
+                    msg += "📈 روند: در حال پیشرفت! 🌟\n"
+                elif trend < -5:
+                    msg += "📉 روند: نیاز به تمرین بیشتر 💪\n"
+                else:
+                    msg += "➡️ روند: ثابت\n"
+
+            # ضعیف‌ترین topic
+            topic_scores = {}
+            for r in exams:
+                if r["total"]:
+                    pct = r["score"] / r["total"] * 100
+                    t = str(r["topic"])[:25]
+                    if t not in topic_scores:
+                        topic_scores[t] = []
+                    topic_scores[t].append(pct)
+            if topic_scores:
+                worst = min(topic_scores, key=lambda t: sum(topic_scores[t])/len(topic_scores[t]))
+                msg += "💪 ضعیف‌ترین topic: " + worst + "\n"
+
+    # AI sessions
+    if ai_sess:
+        msg += "\n🤖 AI Sessions: " + str(len(ai_sess)) + " جلسه\n"
+
+    await update.message.reply_text(msg)
+
+async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """گزارش ریز فعالیت‌ها — فقط معلم"""
+    if update.effective_user.id != TEACHER_ID:
+        await update.message.reply_text("🚫 Teacher only.")
+        return
+    arg = " ".join(context.args) if context.args else ""
+    rows = get_full_report()
+    if not rows:
+        await update.message.reply_text("هیچ فعالیتی ثبت نشده.")
+        return
+    msg = "📋 گزارش ریز فعالیت‌ها\n" + "━" * 28 + "\n"
+    for r in rows:
+        time = r["created_at"].strftime("%m/%d %H:%M")
+        detail = " | " + str(r["detail"]) if r["detail"] else ""
+        msg += time + " — " + str(r["name"]) + " | " + str(r["action"]) + detail + "\n"
+        if len(msg) > 3500:
+            msg += "...\n(بقیه نتایج ادامه دارد)"
+            break
+    await update.message.reply_text(msg)
 
 async def profile_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != TEACHER_ID:
@@ -2123,6 +2321,9 @@ def main():
     app.add_handler(CommandHandler("endai", endai_cmd))
     app.add_handler(CommandHandler("results", results_cmd))
     app.add_handler(CommandHandler("profile", profile_cmd))
+    app.add_handler(CommandHandler("myscore", myscore_cmd))
+    app.add_handler(CommandHandler("myprogress", myprogress_cmd))
+    app.add_handler(CommandHandler("report", report_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
