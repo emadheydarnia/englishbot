@@ -150,6 +150,7 @@
       <div class="opts" id="g-opts"></div>
       <div class="lifelines">
         <div class="life" id="life-fifty">50:50</div>
+        <div class="life" id="life-phone">📞</div>
         <div class="life" id="life-skip">🔄</div>
         <div class="life" id="life-walk">💼</div>
       </div>
@@ -201,7 +202,7 @@ const snd = {
 };
 
 // ── State ──
-let ladder=[], qindex=0, answering=false, currentLifelines={fifty:true,skip:true};
+let ladder=[], qindex=0, answering=false, currentLifelines={fifty:true,skip:true,phone:true};
 
 // ── Helpers ──
 function money(n){ return '€'+n.toLocaleString('en-US'); }
@@ -263,6 +264,7 @@ function renderQuestion(q, idx){
 function updateLifelineUI(){
   document.getElementById('life-fifty').classList.toggle('used', !currentLifelines.fifty);
   document.getElementById('life-skip').classList.toggle('used', !currentLifelines.skip);
+  document.getElementById('life-phone').classList.toggle('used', !currentLifelines.phone);
 }
 
 // ── Answer flow ──
@@ -317,6 +319,16 @@ document.getElementById('life-fifty').onclick=async()=>{
     });
     currentLifelines=res.lifelines; updateLifelineUI();
     setHost('✂️ دو گزینه‌ی غلط حذف شد!');
+  }catch(e){ setHost('⚠️ '+e.message); }
+};
+document.getElementById('life-phone').onclick=async()=>{
+  if(!currentLifelines.phone||answering) return;
+  snd.tap();
+  setHost('📞 در حال تماس با دوستت...');
+  try{
+    const res=await api('/api/lifeline',{kind:'phone'});
+    currentLifelines=res.lifelines; updateLifelineUI();
+    setHost(res.phone_text);
   }catch(e){ setHost('⚠️ '+e.message); }
 };
 document.getElementById('life-skip').onclick=async()=>{

@@ -4318,7 +4318,7 @@ async def api_start(request):
     g = {
         "active": True, "level_index": li, "qindex": 0,
         "current_q": None, "hidden": [], "correct_count": 0,
-        "used_5050": False, "used_skip": False, "used_ids": set(),
+        "used_5050": False, "used_skip": False, "used_phone": False, "used_ids": set(),
     }
     M_API_GAMES[uid] = g
     try:
@@ -4331,7 +4331,7 @@ async def api_start(request):
         "qindex": g["qindex"],
         "ladder": m_api_ladder(),
         "progress": m_api_progress_payload(uid),
-        "lifelines": {"fifty": True, "skip": True},
+        "lifelines": {"fifty": True, "skip": True, "phone": True},
     })
 
 async def api_answer(request):
@@ -4385,7 +4385,7 @@ async def api_answer(request):
             "money_now": money_now, "safe_reached": safe_reached,
             "next_question": m_api_public_question(nq),
             "qindex": g["qindex"],
-            "lifelines": {"fifty": not g["used_5050"], "skip": not g["used_skip"]},
+            "lifelines": m_lifelines_state(g),
         })
     else:
         # باخت → پول safe haven
@@ -4404,6 +4404,59 @@ async def api_answer(request):
             "won_money": money, "outcome": "lose",
             "points": pts, "progress": m_api_progress_payload(uid),
         })
+
+def m_lifelines_state(g):
+    """وضعیت همه‌ی کمک‌ها برای ارسال به فرانت."""
+    return {
+        "fifty": not g.get("used_5050"),
+        "skip": not g.get("used_skip"),
+        "phone": not g.get("used_phone"),
+    }
+
+def m_phone_friend_hint(g):
+    """
+    کمک «تماس تلفنی»: یه دوست مجازی که جواب رو لو نمی‌ده.
+    حدوداً ۷۰٪ به سمت جواب درست متمایل می‌شه، با ابراز شک روی یه گزینه‌ی دیگه.
+    اگه 50:50 استفاده شده باشه، فقط بین گزینه‌های باقی‌مونده نظر می‌ده.
+    """
+    import random as _r
+    q = g["current_q"]
+    correct = q["correct"]
+    hidden = g.get("hidden", [])
+    available = [L for L in ("A", "B", "C", "D") if L not in hidden]
+
+    # دوست با احتمال ۷۰٪ درست حدس می‌زنه (اگه درست جزو گزینه‌های باقی‌مونده باشه)
+    confident_letter = correct
+    if correct not in available:
+        confident_letter = _r.choice(available)
+    elif _r.random() > 0.70:
+        # ۳۰٪ مواقع اشتباه متمایل می‌شه
+        others = [L for L in available if L != correct]
+        if others:
+            confident_letter = _r.choice(others)
+
+    # یه گزینه‌ی دیگه برای ابراز شک
+    doubt_pool = [L for L in available if L != confident_letter]
+    doubt_letter = _r.choice(doubt_pool) if doubt_pool else None
+
+    opt = q["options"]
+    cl = confident_letter + ") " + opt[confident_letter]
+    templates_with_doubt = [
+        "می‌بینم... فکر می‌کنم جوابش {c} باشه، ولی راستش روی {d} هم یه‌کم شک دارم. مطمئن نیستم صد درصد.",
+        "اوممم، حس می‌کنم {c} درسته. ولی {d} هم بدک نیست، یه تردید کوچیک دارم.",
+        "به نظرم {c} منطقی‌تره. هرچند بین این و {d} یه‌کم دودلم. خودت تصمیم بگیر.",
+        "فکر کنم {c}. ولی اگه اشتباه کنم، احتمالاً {d} ـه. زیاد مطمئن نیستم‌ها.",
+    ]
+    templates_no_doubt = [
+        "نسبتاً مطمئنم جوابش {c} ـه. ولی خب، صد درصد قول نمی‌دم.",
+        "من می‌رم رو {c}. حس خوبی بهش دارم، ولی تصمیم نهایی با خودته.",
+    ]
+    if doubt_letter:
+        dl = doubt_letter + ") " + opt[doubt_letter]
+        txt = _r.choice(templates_with_doubt).format(c=cl, d=dl)
+    else:
+        txt = _r.choice(templates_no_doubt).format(c=cl)
+    return "📞 دوستت: «" + txt + "»"
 
 async def api_lifeline(request):
     from aiohttp import web
@@ -4427,7 +4480,14 @@ async def api_lifeline(request):
         _r.shuffle(wrong)
         g["hidden"] = wrong[:2]
         return web.json_response({"hidden": g["hidden"],
-                                  "lifelines": {"fifty": False, "skip": not g["used_skip"]}})
+                                  "lifelines": m_lifelines_state(g)})
+    elif kind == "phone":
+        if g.get("used_phone"):
+            return web.json_response({"error": "already_used"}, status=400)
+        g["used_phone"] = True
+        text = m_phone_friend_hint(g)
+        return web.json_response({"phone_text": text,
+                                  "lifelines": m_lifelines_state(g)})
     elif kind == "skip":
         if g["used_skip"]:
             return web.json_response({"error": "already_used"}, status=400)
@@ -4440,7 +4500,7 @@ async def api_lifeline(request):
             return web.json_response({"error": "no_questions"}, status=503)
         return web.json_response({"next_question": m_api_public_question(nq),
                                   "qindex": g["qindex"],
-                                  "lifelines": {"fifty": not g["used_5050"], "skip": False}})
+                                  "lifelines": m_lifelines_state(g)})
     return web.json_response({"error": "bad_kind"}, status=400)
 
 async def api_walk(request):
