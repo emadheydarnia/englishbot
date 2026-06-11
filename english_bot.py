@@ -208,10 +208,34 @@ def add_points(telegram_id, points, reason=""):
     except Exception as e:
         print("add_points error: " + str(e))
 
-def award_ai_points(user_id, session):
+# دستوری که به همه‌ی promptهای AI اضافه می‌شه تا آخر هر session یه نمره بده
+SCORING_RULE = (
+    "\n\n[GRADING — VERY IMPORTANT: When you give the final end-of-session report, "
+    "you MUST evaluate how well the student actually performed during THIS session "
+    "(accuracy of their answers, real effort, engagement). On the VERY LAST line of the report, "
+    "output a hidden score in EXACTLY this format on its own line: SCORE: X/10  "
+    "where X is an integer from 0 to 10. Give a LOW score (0-3) if the student barely "
+    "engaged, sent random/irrelevant messages, or did not really do the task. Give a HIGH "
+    "score (8-10) only for genuine, mostly-correct effort. Be honest and strict — this score "
+    "decides their leaderboard points. Do not explain the score; just output the SCORE: line.]"
+)
+
+def m_parse_ai_score(text):
+    """نمره‌ی پنهان (SCORE: X/10) رو از متن پایانی AI می‌خونه. اگه نبود، None."""
+    try:
+        import re as _re
+        m = _re.search(r"SCORE:\s*(\d{1,2})\s*/\s*10", text, _re.IGNORECASE)
+        if m:
+            s = int(m.group(1))
+            return max(0, min(10, s))
+    except Exception:
+        pass
+    return None
+
+def award_ai_points(user_id, session, ai_text=""):
     """
-    امتیاز یه AI session رو یک بار (و فقط یک بار) ثبت می‌کنه.
-    شرط: حداقل تعامل معنادار (چند پیام) داشته باشه تا امتیاز الکی داده نشه.
+    امتیاز یه AI session رو یک بار (و فقط یک بار) بر اساس نمره‌ی واقعیِ AI ثبت می‌کنه.
+    اگه AI نمره نداده باشه، یه نمره‌ی محافظه‌کارانه‌ی پیش‌فرض در نظر گرفته می‌شه.
     این تابع از هر جایی که session تموم می‌شه صدا زده می‌شه (دکمه، /endai، یا تشخیص خودکار).
     """
     try:
@@ -226,19 +250,42 @@ def award_ai_points(user_id, session):
         user_turns = sum(1 for h in session.get("history", []) if h.get("role") == "user")
         if user_turns < 2:
             return  # تعامل کافی نبوده — امتیاز نده (ولی قفلش هم نکن)
+
+        # نمره‌ی AI رو از متن پایانی (یا آخرین پیام model) بخون
+        score = m_parse_ai_score(ai_text or "")
+        if score is None:
+            for h in reversed(session.get("history", [])):
+                if h.get("role") == "model":
+                    parts = h.get("parts", [])
+                    txt = parts[0] if parts else ""
+                    score = m_parse_ai_score(txt)
+                    if score is not None:
+                        break
+        # اگه AI اصلاً نمره نداد، یه نمره‌ی متوسط محافظه‌کارانه
+        if score is None:
+            score = 5
+
+        # امتیاز پایه بر اساس نوع تمرین
         if topic_k.startswith("conv_"):
-            pts, reason = 70, "conversation: " + topic_k
+            base, reason = 70, "conversation"
         elif topic_k == "level_test":
-            pts, reason = 80, "level test"
+            base, reason = 30, "level test"
         elif "writing" in topic_k:
-            pts, reason = 60, "writing: " + topic_k
+            base, reason = 60, "writing"
         elif topic_k.startswith("vocab_") or "vocab" in topic_k:
-            pts, reason = 50, "vocabulary: " + topic_k
+            base, reason = 50, "vocabulary"
         elif topic_k.startswith("grammar_") or "grammar" in topic_k:
-            pts, reason = 50, "grammar: " + topic_k
+            base, reason = 50, "grammar"
         else:
-            pts, reason = 50, "ai session: " + topic_k
-        add_points(user_id, pts, reason)
+            base, reason = 50, "ai session"
+
+        # امتیاز نهایی = پایه × (نمره/۱۰) — گرد شده
+        pts = round(base * score / 10)
+        if pts <= 0:
+            # نمره‌ی صفر یا خیلی پایین → امتیاز نده ولی session رو قفل کن
+            session["points_done"] = True
+            return
+        add_points(user_id, pts, reason + " " + topic_k + " (score " + str(score) + "/10)")
         session["points_done"] = True
     except Exception as e:
         print("award_ai_points error: " + str(e))
@@ -3422,7 +3469,7 @@ Start the scene now — introduce your character and setting briefly, then begin
 
         try:
             loop = asyncio.get_event_loop()
-            start_p = topic["prompt"]
+            start_p = topic["prompt"] + SCORING_RULE
             def call_g():
                 return call_gemini_api([], start_p)
             resp = await loop.run_in_executor(None, call_g)
@@ -3524,10 +3571,10 @@ Student translates German sentences into English.
         is_german = topic_key.startswith("de_") or topic_key.startswith("dei_") or locals().get("is_german_override", False)
         if is_german:
             session_msg = "🤖 " + topic["label"] + "\n\nKI-Sitzung gestartet!\nTippe /endai zum Beenden.\n\n⏳ Bitte warten..."
-            start_prompt = topic["prompt"] + name_inject + "\n\nBitte starte die Sitzung jetzt auf Deutsch. Gib KEINE persischen Saetze."
+            start_prompt = topic["prompt"] + name_inject + SCORING_RULE + "\n\nBitte starte die Sitzung jetzt auf Deutsch. Gib KEINE persischen Saetze."
         else:
             session_msg = "🤖 " + topic["label"] + "\n\nAI session started!\nType /endai to end the session.\n\n⏳ Please wait..."
-            start_prompt = topic["prompt"] + name_inject + "\n\nPlease start the session now."
+            start_prompt = topic["prompt"] + name_inject + SCORING_RULE + "\n\nPlease start the session now."
         await query.edit_message_text(session_msg)
 
         try:
@@ -3808,6 +3855,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session["history"].append({"role": "model", "parts": [resp_text]})
 
             is_end = any(word in resp_text.lower() for word in ["band score", "overall:", "level:", "سطح:", "نمره:", "weekly report", "گزارش هفتگی", "بازخورد مکالمه", "امتیاز کلی", "سطح تخمینی"])
+            # وجود خط SCORE: X/10 هم نشونه‌ی پایان session ـه
+            if m_parse_ai_score(resp_text) is not None:
+                is_end = True
+
+            # خط نمره‌ی پنهان رو از متنی که به دانش‌آموز نشون داده می‌شه حذف کن
+            import re as _re_score
+            display_text = _re_score.sub(r"\n?\s*SCORE:\s*\d{1,2}\s*/\s*10\s*", "", resp_text).strip()
 
             if is_end:
                 try:
@@ -3824,15 +3878,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             kb = ai_end_keyboard() if is_end else ai_active_keyboard()
 
-            if len(resp_text) > 4000:
-                chunks = [resp_text[i:i+4000] for i in range(0, len(resp_text), 4000)]
+            if len(display_text) > 4000:
+                chunks = [display_text[i:i+4000] for i in range(0, len(display_text), 4000)]
                 for i, chunk in enumerate(chunks):
                     if i == len(chunks) - 1:
                         await update.message.reply_text(chunk)
                     else:
                         await update.message.reply_text(chunk)
             else:
-                await update.message.reply_text(resp_text)
+                await update.message.reply_text(display_text)
 
             if is_end:
                 log_activity(user_id, ai_state.get("student_name","?"), ai_state.get("student_class","?"), "ai_end", session.get("topic",""))
@@ -3847,8 +3901,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     level=next((w for w in ["A1","A2","B1","B2","C1"] if w in resp_text), None),
                     summary=resp_text[:200]
                 )
-                # امتیازدهی AI session (یک‌بار، با تشخیص خودکار پایان)
-                award_ai_points(user_id, session)
+                # امتیازدهی AI session بر اساس نمره‌ی واقعی AI (یک‌بار)
+                award_ai_points(user_id, session, resp_text)
                 clear_ai_session(user_id)
                 await update.message.reply_text(
                     "🏠 منو اصلی:",
