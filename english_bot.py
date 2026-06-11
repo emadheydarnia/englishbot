@@ -6,7 +6,7 @@ import os
 import json
 import asyncio
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, WebAppInfo
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes,
@@ -17,6 +17,7 @@ from ielts_exam_data import IELTS_EXAMS, IELTS_CATEGORIES
 EXAMS = {**EXAMS, **IELTS_EXAMS}
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+MINIAPP_URL = os.environ.get("MINIAPP_URL", "")
 TEACHER_ID = int(os.environ.get("TEACHER_ID", "0"))
 EXAM_TIME_MINUTES = int(os.environ.get("EXAM_TIME_MINUTES", "30"))
 import requests
@@ -79,6 +80,49 @@ def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        # ── Millionaire game: پیشرفت لیگ هر کاربر ──
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS millionaire_progress (
+                telegram_id BIGINT PRIMARY KEY,
+                level_index INTEGER DEFAULT 0,
+                completed_levels INTEGER DEFAULT 0,
+                best_money INTEGER DEFAULT 0,
+                games_played INTEGER DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        # ── Millionaire game: تاریخچه بازی‌ها برای لیدربورد هفتگی ──
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS millionaire_games (
+                id SERIAL PRIMARY KEY,
+                telegram_id BIGINT,
+                level_index INTEGER,
+                topic VARCHAR(100),
+                money_won INTEGER,
+                questions_correct INTEGER,
+                won_million BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        # ── Millionaire game: بانک سوالات از‌پیش‌ساخته ──
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS millionaire_questions (
+                id SERIAL PRIMARY KEY,
+                level_index INTEGER,
+                topic VARCHAR(100),
+                cefr VARCHAR(5),
+                question TEXT,
+                option_a TEXT,
+                option_b TEXT,
+                option_c TEXT,
+                option_d TEXT,
+                correct CHAR(1),
+                explanation_fa TEXT,
+                approved BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_mq_level_cefr ON millionaire_questions(level_index, cefr)")
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         print("DB init error: " + str(e))
@@ -202,6 +246,89 @@ def get_my_points(telegram_id):
     except Exception as e:
         print("my_points error: " + str(e))
         return None
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── MILLIONAIRE GAME — Database Helpers ───────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+
+def m_get_progress(telegram_id):
+    """پیشرفت لیگ کاربر — اگه نبود می‌سازه"""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM millionaire_progress WHERE telegram_id=%s", (telegram_id,))
+        row = cur.fetchone()
+        if not row:
+            cur.execute(
+                "INSERT INTO millionaire_progress (telegram_id) VALUES (%s) ON CONFLICT DO NOTHING",
+                (telegram_id,)
+            )
+            conn.commit()
+            cur.execute("SELECT * FROM millionaire_progress WHERE telegram_id=%s", (telegram_id,))
+            row = cur.fetchone()
+        cur.close(); conn.close()
+        return row
+    except Exception as e:
+        print("m_get_progress error: " + str(e))
+        return {"telegram_id": telegram_id, "level_index": 0, "completed_levels": 0,
+                "best_money": 0, "games_played": 0}
+
+def m_save_game(telegram_id, level_index, topic, money_won, questions_correct, won_million):
+    """ثبت نتیجه یه بازی + بروزرسانی پیشرفت لیگ"""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO millionaire_games
+               (telegram_id, level_index, topic, money_won, questions_correct, won_million)
+               VALUES (%s,%s,%s,%s,%s,%s)""",
+            (telegram_id, level_index, topic, money_won, questions_correct, won_million)
+        )
+        # بروزرسانی best_money و games_played
+        cur.execute(
+            """UPDATE millionaire_progress
+               SET best_money = GREATEST(best_money, %s),
+                   games_played = games_played + 1,
+                   updated_at = NOW()
+               WHERE telegram_id=%s""",
+            (money_won, telegram_id)
+        )
+        # اگه به یک میلیون رسیده → آنلاک فصل بعد
+        if won_million:
+            cur.execute(
+                """UPDATE millionaire_progress
+                   SET level_index = level_index + 1,
+                       completed_levels = completed_levels + 1,
+                       updated_at = NOW()
+                   WHERE telegram_id=%s AND level_index = %s""",
+                (telegram_id, level_index)
+            )
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        print("m_save_game error: " + str(e))
+
+def m_weekly_leaderboard():
+    """لیدربورد هفتگی Millionaire — مجموع پول این هفته"""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT u.name, u.student_class, g.telegram_id,
+                   SUM(g.money_won) as week_money,
+                   COUNT(*) as games,
+                   SUM(CASE WHEN g.won_million THEN 1 ELSE 0 END) as millions
+            FROM millionaire_games g
+            JOIN users u ON u.telegram_id = g.telegram_id
+            WHERE g.created_at >= date_trunc('week', CURRENT_DATE)
+            GROUP BY g.telegram_id, u.name, u.student_class
+            ORDER BY week_money DESC
+            LIMIT 20
+        """)
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return rows
+    except Exception as e:
+        print("m_weekly_leaderboard error: " + str(e))
+        return []
 
 def get_all_users():
     """لیست همه کاربران برای معلم"""
@@ -2177,6 +2304,7 @@ def a2z_keyboard():
         [InlineKeyboardButton("📚 Vocabulary (AI)", callback_data="cat_vocabulary")],
         [InlineKeyboardButton("📖 Grammar (AI)", callback_data="cat_ai")],
         [InlineKeyboardButton("💬 Interactive Speaking", callback_data="cat_speaking")],
+        [InlineKeyboardButton("🎬 Millionaire Game", callback_data="cat_millionaire")],
         [InlineKeyboardButton("✍️ Writing (AI)", callback_data="ai_writing")],
         [InlineKeyboardButton("🔙 Back", callback_data="back_main")],
     ])
@@ -2381,6 +2509,183 @@ def get_ai_session(user_id):
 
 def clear_ai_session(user_id):
     ai_sessions[user_id] = {"history": [], "topic": None, "active": False}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── MILLIONAIRE GAME — Engine ─────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ترتیب لیگ — هر فصل یه grammar topic از AI_TOPICS (به ترتیب سختی A2→C1)
+MILLIONAIRE_LEAGUE = [
+    "present_simple_continuous",
+    "past_simple",
+    "present_perfect",
+    "present_perfect_continuous",
+    "comparison",
+    "rather_prefer",
+    "relative_clause",
+    "fanboys",
+    "contrast",
+    "conditionals",
+    "passive",
+    "causative",
+    "modals",
+]
+
+# نردبان جایزه (۱۵ سوال) + دو safe haven
+MILLIONAIRE_LADDER = [
+    100, 200, 300, 500, 1000,        # Q1-5  (safe haven: 1,000)
+    2000, 4000, 8000, 16000, 32000,  # Q6-10 (safe haven: 32,000)
+    64000, 125000, 250000, 500000, 1000000,  # Q11-15 (€1,000,000)
+]
+MILLIONAIRE_SAFE = {4: 1000, 9: 32000}   # index سوال (۰-based) که بعدش safe می‌شه
+MILLIONAIRE_TOTAL_Q = 15
+
+# سطح CEFR هر سوال بر اساس شماره‌اش
+def m_level_for_q(qnum):
+    if qnum <= 3:   return "A2"
+    if qnum <= 7:   return "B1"
+    if qnum <= 11:  return "B2"
+    return "C1"
+
+def m_topic_label(level_index):
+    key = MILLIONAIRE_LEAGUE[level_index]
+    t = AI_TOPICS.get(key, {})
+    return t.get("label", key)
+
+def m_fmt_money(n):
+    return "€" + format(n, ",")
+
+def m_build_question_prompt(level_index, qnum):
+    """پرامپت تولید یه سوال چندگزینه‌ای گرامری توسط Gemini"""
+    current_key = MILLIONAIRE_LEAGUE[level_index]
+    current_label = m_topic_label(level_index)
+    review_keys = MILLIONAIRE_LEAGUE[:level_index]
+    review_labels = [AI_TOPICS.get(k, {}).get("label", k) for k in review_keys]
+    review_txt = ""
+    if review_labels:
+        clean = [r.split(" ", 1)[-1] if " " in r else r for r in review_labels]
+        review_txt = ("You MAY also draw from these previously-mastered review topics "
+                      "(about 30% of questions): " + ", ".join(clean) + ".\n")
+    cefr = m_level_for_q(qnum)
+    return f"""You are the question writer for a 'Who Wants to Be a Millionaire' English grammar game.
+Generate ONE multiple-choice grammar question.
+
+MAIN TOPIC for this level: {current_label}
+{review_txt}Difficulty (CEFR): {cefr}  (this is question {qnum} of 15 — gets harder as the number grows)
+
+STRICT RULES:
+- The question tests ENGLISH GRAMMAR (a fill-in-the-blank sentence or a "choose the correct form" item).
+- Exactly 4 options labelled A, B, C, D. Exactly ONE is correct.
+- Options must be plausible — wrong ones reflect common learner mistakes.
+- Keep the question text in ENGLISH. Keep it short (one sentence + the blank).
+- Write a SHORT explanation in PERSIAN (Farsi), max 2 sentences, explaining why the answer is correct.
+
+Return ONLY valid JSON, no markdown, no extra text, exactly this shape:
+{{"question":"...","options":{{"A":"...","B":"...","C":"...","D":"..."}},"correct":"A","explanation_fa":"..."}}"""
+
+def m_parse_question(raw):
+    """خروجی JSON مدل رو امن پارس می‌کنه"""
+    import json as _json, re as _re
+    txt = raw.strip()
+    txt = txt.replace("```json", "").replace("```", "").strip()
+    # اولین { تا آخرین }
+    s = txt.find("{"); e = txt.rfind("}")
+    if s != -1 and e != -1:
+        txt = txt[s:e+1]
+    data = _json.loads(txt)
+    opts = data["options"]
+    correct = str(data["correct"]).strip().upper()[:1]
+    if correct not in ("A", "B", "C", "D"):
+        raise ValueError("bad correct letter")
+    for L in ("A", "B", "C", "D"):
+        if L not in opts:
+            raise ValueError("missing option " + L)
+    return {
+        "question": str(data["question"]).strip(),
+        "options": {L: str(opts[L]).strip() for L in ("A", "B", "C", "D")},
+        "correct": correct,
+        "explanation_fa": str(data.get("explanation_fa", "")).strip(),
+    }
+
+def m_pick_from_bank(level_index, cefr, exclude_ids):
+    """یه سوال تصادفی از بانک DB می‌گیره که قبلاً توی همین بازی نیومده باشه."""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        if exclude_ids:
+            cur.execute(
+                """SELECT * FROM millionaire_questions
+                   WHERE level_index=%s AND cefr=%s AND approved=TRUE
+                     AND id <> ALL(%s)
+                   ORDER BY RANDOM() LIMIT 1""",
+                (level_index, cefr, list(exclude_ids)),
+            )
+        else:
+            cur.execute(
+                """SELECT * FROM millionaire_questions
+                   WHERE level_index=%s AND cefr=%s AND approved=TRUE
+                   ORDER BY RANDOM() LIMIT 1""",
+                (level_index, cefr),
+            )
+        row = cur.fetchone()
+        # اگه برای این سطح خالی بود، از کل فصل بگیر
+        if not row:
+            cur.execute(
+                """SELECT * FROM millionaire_questions
+                   WHERE level_index=%s AND approved=TRUE
+                   ORDER BY RANDOM() LIMIT 1""",
+                (level_index,),
+            )
+            row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "question": row["question"],
+            "options": {"A": row["option_a"], "B": row["option_b"],
+                        "C": row["option_c"], "D": row["option_d"]},
+            "correct": str(row["correct"]).strip().upper()[:1],
+            "explanation_fa": row.get("explanation_fa", "") or "",
+        }
+    except Exception as e:
+        print("m_pick_from_bank error: " + str(e))
+        return None
+
+async def m_generate_question(level_index, qnum, used_ids=None):
+    """اول از بانک DB می‌گیره؛ اگه بانک خالی بود، زنده از Gemini می‌سازه (fallback)."""
+    cefr = m_level_for_q(qnum)
+    used_ids = used_ids or set()
+    # ۱) بانک از‌پیش‌ساخته
+    q = m_pick_from_bank(level_index, cefr, used_ids)
+    if q:
+        return q
+    # ۲) fallback زنده
+    loop = asyncio.get_event_loop()
+    prompt = m_build_question_prompt(level_index, qnum)
+    last_err = None
+    for attempt in range(3):
+        try:
+            raw = await loop.run_in_executor(None, lambda: call_gemini_api([], prompt))
+            parsed = m_parse_question(raw)
+            parsed["id"] = None
+            return parsed
+        except Exception as e:
+            last_err = e
+            logger.warning("Millionaire Q gen attempt " + str(attempt+1) + " failed: " + str(e))
+            await asyncio.sleep(2)
+    raise last_err
+
+# ── Keyboards بازی ──
+def m_money_at(qindex_failed):
+    """پولی که با باخت در سوال qindex_failed برداشت میشه (آخرین safe haven)"""
+    won = 0
+    for safe_idx, amount in MILLIONAIRE_SAFE.items():
+        if qindex_failed > safe_idx:
+            won = max(won, amount)
+    return won
+
+
 
 async def chat_with_gemini(user_id, user_message, system_prompt=None):
     session = get_ai_session(user_id)
@@ -2701,6 +3006,40 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             clear_state(context, user_id)
         clear_ai_session(user_id)
         await query.edit_message_text("Please choose your group:", reply_markup=main_menu_keyboard())
+
+    # ══════════════════════════════════════════════════════════════════
+    # ── MILLIONAIRE — Mini App launcher ───────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    elif data == "cat_millionaire":
+        # بستن session های دیگه
+        st = get_state(context, user_id)
+        if st.get("active"):
+            st["active"] = False
+            for j in context.job_queue.get_jobs_by_name("timer_" + str(user_id)):
+                j.schedule_removal()
+            clear_state(context, user_id)
+        clear_ai_session(user_id)
+        prog = m_get_progress(user_id)
+        li = min(prog["level_index"] if prog else 0, len(MILLIONAIRE_LEAGUE) - 1)
+        intro = (
+            "🎬 *WHO WANTS TO BE A MILLIONAIRE*\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "۱۵ سوال گرامری • از " + m_fmt_money(100) + " تا " + m_fmt_money(1000000) + "\n"
+            "🔒 مرحله امن: " + m_fmt_money(1000) + " و " + m_fmt_money(32000) + "\n"
+            "✂️ کمک‌ها: 50:50 و تعویض سوال\n\n"
+            "📖 فصل فعلی: *" + m_topic_label(li) + "*\n"
+            "🏅 فصل‌های فتح‌شده: " + str(prog["completed_levels"] if prog else 0) + "/" + str(len(MILLIONAIRE_LEAGUE)) + "\n"
+            "💰 رکورد: " + m_fmt_money(prog["best_money"] if prog else 0) + "\n\n"
+            "🎮 دکمه‌ی زیر رو بزن تا بازی گرافیکی باز بشه!"
+        )
+        rows = []
+        if MINIAPP_URL:
+            rows.append([InlineKeyboardButton("🎮 شروع بازی گرافیکی", web_app=WebAppInfo(url=MINIAPP_URL))])
+        else:
+            intro = ("🎬 *Millionaire*\n\n⚠️ آدرس Mini App هنوز تنظیم نشده.\n"
+                     "متغیر `MINIAPP_URL` رو توی Railway تنظیم کن.")
+        rows.append([InlineKeyboardButton("🔙 Back", callback_data="cat_a2z")])
+        await query.edit_message_text(intro, reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
 
     elif data == "lang_persian":
         # اگه هنوز ثبت‌نام نکرده، اول ثبت‌نام کنه
@@ -3685,9 +4024,497 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += time + " — " + str(d['name']) + " | " + str(d['topic']) + score_str + "\n"
         await update.message.reply_text(msg)
 
+def m_bank_count_by_level():
+    """تعداد سوال هر فصل توی بانک"""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT level_index, COUNT(*) FROM millionaire_questions GROUP BY level_index")
+        d = {li: c for li, c in cur.fetchall()}
+        cur.close(); conn.close()
+        return d
+    except Exception as e:
+        print("m_bank_count error: " + str(e))
+        return {}
+
+def m_bootstrap_bank(target_per_level=100, max_seconds=0):
+    """
+    اگه بانک سوالات خالی/ناقصه، یک بار پُرش می‌کنه. این تابع blocking است و
+    موقع startup قبل از run_polling صدا زده می‌شه. هر فصل ۲۵ سوال در هر CEFR.
+    max_seconds=0 یعنی بدون محدودیت زمانی.
+    """
+    import time as _t
+    cefr_levels = ["A2", "B1", "B2", "C1"]
+    per_cefr = max(1, target_per_level // len(cefr_levels))
+    start = _t.time()
+
+    counts = m_bank_count_by_level()
+    total_now = sum(counts.values())
+    if total_now >= target_per_level * len(MILLIONAIRE_LEAGUE):
+        logger.info("Millionaire bank already full (%d). Skipping bootstrap." % total_now)
+        return
+    logger.info("Millionaire bank bootstrap starting (have %d questions)..." % total_now)
+
+    try:
+        conn = get_db()
+    except Exception as e:
+        logger.error("bootstrap: DB connect failed: " + str(e))
+        return
+
+    for level_index in range(len(MILLIONAIRE_LEAGUE)):
+        topic_key = MILLIONAIRE_LEAGUE[level_index]
+        topic_label = m_topic_label(level_index)
+        review = [m_topic_label(i) for i in range(level_index)][-4:]
+        review_txt = ("Some questions (~30%) may lightly review: " + ", ".join(review) + ".\n") if review else ""
+
+        cur = conn.cursor()
+        cur.execute("SELECT LOWER(question) FROM millionaire_questions WHERE level_index=%s", (level_index,))
+        seen = set(r[0] for r in cur.fetchall())
+        cur.close()
+
+        for cefr in cefr_levels:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM millionaire_questions WHERE level_index=%s AND cefr=%s",
+                        (level_index, cefr))
+            have = cur.fetchone()[0]; cur.close()
+            need = per_cefr - have
+            attempts = 0
+            while need > 0 and attempts < 12:
+                if max_seconds and (_t.time() - start) > max_seconds:
+                    logger.warning("bootstrap: time budget reached, stopping.")
+                    conn.close(); return
+                attempts += 1
+                ask = min(5, need + 2)
+                prompt = (
+                    "You are writing questions for a 'Who Wants to Be a Millionaire' English GRAMMAR game.\n"
+                    "MAIN TOPIC: " + topic_label + "\n" + review_txt +
+                    "CEFR difficulty: " + cefr + "\n\n"
+                    "Generate " + str(ask) + " DISTINCT multiple-choice grammar questions.\n"
+                    "Rules: one short English sentence (fill-in-the-blank or choose correct form); "
+                    "exactly 4 options A,B,C,D; exactly ONE correct; vary the correct letter; "
+                    "wrong options reflect common learner mistakes; a SHORT Persian (Farsi) explanation (max 2 sentences).\n"
+                    'Return ONLY a valid JSON array, no markdown: '
+                    '[{"question":"...","options":{"A":"...","B":"...","C":"...","D":"..."},"correct":"A","explanation_fa":"..."}]'
+                )
+                try:
+                    raw = call_gemini_api([], prompt)
+                except Exception as e:
+                    logger.warning("bootstrap gen error L%d %s: %s" % (level_index, cefr, str(e)))
+                    _t.sleep(3); continue
+                # parse array
+                import json as _j
+                txt = raw.strip().replace("```json", "").replace("```", "").strip()
+                a = txt.find("["); b = txt.rfind("]")
+                if a != -1 and b != -1:
+                    txt = txt[a:b+1]
+                try:
+                    items = _j.loads(txt)
+                except Exception:
+                    continue
+                fresh = []
+                for it in items:
+                    try:
+                        opts = it["options"]
+                        cc = str(it["correct"]).strip().upper()[:1]
+                        if cc not in ("A", "B", "C", "D"):
+                            continue
+                        if not all(L in opts for L in ("A", "B", "C", "D")):
+                            continue
+                        qk = str(it["question"]).strip().lower()
+                        if qk in seen:
+                            continue
+                        seen.add(qk)
+                        fresh.append((level_index, topic_key, cefr, str(it["question"]).strip(),
+                                      str(opts["A"]).strip(), str(opts["B"]).strip(),
+                                      str(opts["C"]).strip(), str(opts["D"]).strip(),
+                                      cc, str(it.get("explanation_fa", "")).strip()))
+                        if len(fresh) >= need:
+                            break
+                    except Exception:
+                        continue
+                if fresh:
+                    cur2 = conn.cursor()
+                    cur2.executemany(
+                        """INSERT INTO millionaire_questions
+                           (level_index, topic, cefr, question, option_a, option_b, option_c, option_d, correct, explanation_fa)
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        fresh)
+                    conn.commit(); cur2.close()
+                    need -= len(fresh)
+                _t.sleep(1)
+        logger.info("bootstrap: level %d (%s) done." % (level_index + 1, topic_label))
+
+    conn.close()
+    final = m_bank_count_by_level()
+    logger.info("Millionaire bank bootstrap finished. Total: %d" % sum(final.values()))
+
+async def mqstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """آمار بانک سوالات Millionaire — فقط معلم"""
+    if update.effective_user.id != TEACHER_ID:
+        await update.message.reply_text("🚫 Teacher only.")
+        return
+    counts = m_bank_count_by_level()
+    if not counts:
+        await update.message.reply_text("بانک سوالات خالیه. هنوز چیزی تولید نشده.")
+        return
+    msg = "🎬 بانک سوالات Millionaire\n" + "━" * 22 + "\n"
+    total = 0
+    for i in range(len(MILLIONAIRE_LEAGUE)):
+        c = counts.get(i, 0); total += c
+        bar = "✅" if c >= 100 else ("🟡" if c > 0 else "⬜")
+        msg += f"{bar} فصل {i+1}: {c}/100 — {m_topic_label(i)}\n"
+    msg += "━" * 22 + f"\nمجموع: {total} سوال"
+    await update.message.reply_text(msg)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── MINI APP — Backend API (aiohttp) ──────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# این بخش یه وب‌سرور سبک کنار خود bot اجرا می‌شه و به Mini App (وب‌اپ تلگرام)
+# سوال می‌ده، جواب رو اعتبارسنجی می‌کنه و نتیجه/لیدربورد رو برمی‌گردونه.
+# امنیت: همه‌ی requestها با initData تلگرام (امضای HMAC با BOT_TOKEN) احراز هویت می‌شن.
+# وضعیت بازی روی سرور نگه‌داری می‌شه تا کاربر نتونه با دستکاری فرانت تقلب کنه.
+
+import hashlib
+import hmac
+from urllib.parse import parse_qsl
+
+# وضعیت بازی‌های فعال Mini App در حافظه — کلید: telegram_id
+M_API_GAMES = {}
+
+def m_verify_init_data(init_data, max_age=86400):
+    """
+    اعتبارسنجی initData تلگرام طبق مستندات رسمی.
+    خروجی: dict اطلاعات کاربر اگه معتبر بود، وگرنه None.
+    """
+    if not init_data or not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+        return None
+    try:
+        pairs = dict(parse_qsl(init_data, keep_blank_values=True))
+        received_hash = pairs.pop("hash", None)
+        if not received_hash:
+            return None
+        # رشته‌ی بررسی داده‌ها (الفبایی، با \n)
+        data_check = "\n".join(f"{k}={v}" for k, v in sorted(pairs.items()))
+        secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+        calc_hash = hmac.new(secret_key, data_check.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(calc_hash, received_hash):
+            return None
+        # بررسی تازگی (جلوگیری از replay قدیمی)
+        auth_date = int(pairs.get("auth_date", "0"))
+        if max_age and auth_date:
+            import time as _t
+            if _t.time() - auth_date > max_age:
+                return None
+        user_json = pairs.get("user")
+        if not user_json:
+            return None
+        return json.loads(user_json)
+    except Exception as e:
+        logger.warning("initData verify failed: " + str(e))
+        return None
+
+def m_api_user_from_request(data):
+    """از بدنه‌ی request، کاربر احراز هویت‌شده رو برمی‌گردونه (یا None)."""
+    init_data = data.get("initData", "")
+    user = m_verify_init_data(init_data)
+    if not user:
+        return None
+    return user
+
+def m_api_public_question(q):
+    """نسخه‌ی امن سوال برای فرانت — بدون حرف درست و توضیح."""
+    return {
+        "id": q.get("id"),
+        "question": q["question"],
+        "options": q["options"],
+    }
+
+def m_api_ladder():
+    out = []
+    for i in range(MILLIONAIRE_TOTAL_Q):
+        out.append({
+            "step": i + 1,
+            "money": MILLIONAIRE_LADDER[i],
+            "safe": i in MILLIONAIRE_SAFE,
+            "top": i == MILLIONAIRE_TOTAL_Q - 1,
+        })
+    return out
+
+def m_api_progress_payload(telegram_id):
+    prog = m_get_progress(telegram_id)
+    li = min(prog["level_index"] if prog else 0, len(MILLIONAIRE_LEAGUE) - 1)
+    return {
+        "level_index": li,
+        "level_label": m_topic_label(li),
+        "completed_levels": prog["completed_levels"] if prog else 0,
+        "total_levels": len(MILLIONAIRE_LEAGUE),
+        "best_money": prog["best_money"] if prog else 0,
+    }
+
+async def m_api_next_question(g):
+    """سوال بعدی رو از بانک می‌گیره و توی state سرور می‌ذاره."""
+    qnum = g["qindex"] + 1
+    q = await m_generate_question(g["level_index"], qnum, g.get("used_ids", set()))
+    g["current_q"] = q
+    g["hidden"] = []
+    if q.get("id") is not None:
+        g.setdefault("used_ids", set()).add(q["id"])
+    return q
+
+# ── Handlers ──
+async def api_health(request):
+    from aiohttp import web
+    return web.json_response({"ok": True})
+
+async def api_start(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    # مطمئن شو کاربر توی جدول users هست (برای لیدربورد)
+    existing = get_user(uid)
+    if not existing:
+        nm = (user.get("first_name", "") + " " + user.get("last_name", "")).strip() or user.get("username", "Player")
+        save_user(uid, nm, "MiniApp")
+
+    prog = m_get_progress(uid)
+    li = min(prog["level_index"] if prog else 0, len(MILLIONAIRE_LEAGUE) - 1)
+    g = {
+        "active": True, "level_index": li, "qindex": 0,
+        "current_q": None, "hidden": [], "correct_count": 0,
+        "used_5050": False, "used_skip": False, "used_ids": set(),
+    }
+    M_API_GAMES[uid] = g
+    try:
+        q = await m_api_next_question(g)
+    except Exception as e:
+        logger.error("api_start gen failed: " + str(e))
+        return web.json_response({"error": "no_questions"}, status=503)
+    return web.json_response({
+        "question": m_api_public_question(q),
+        "qindex": g["qindex"],
+        "ladder": m_api_ladder(),
+        "progress": m_api_progress_payload(uid),
+        "lifelines": {"fifty": True, "skip": True},
+    })
+
+async def api_answer(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    g = M_API_GAMES.get(uid)
+    if not g or not g.get("active") or not g.get("current_q"):
+        return web.json_response({"error": "no_active_game"}, status=400)
+
+    chosen = str(data.get("choice", "")).strip().upper()[:1]
+    if chosen not in ("A", "B", "C", "D"):
+        return web.json_response({"error": "bad_choice"}, status=400)
+
+    q = g["current_q"]
+    correct = q["correct"]
+    is_correct = (chosen == correct)
+
+    if is_correct:
+        g["correct_count"] += 1
+        money_now = MILLIONAIRE_LADDER[g["qindex"]]
+        # سوال آخر → برد کامل
+        if g["qindex"] >= MILLIONAIRE_TOTAL_Q - 1:
+            m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
+                        1000000, g["correct_count"], True)
+            pts = 100 + 50
+            add_points(uid, pts, "miniapp millionaire win L" + str(g["level_index"]+1))
+            g["active"] = False
+            return web.json_response({
+                "correct": True, "choice": chosen, "correct_choice": correct,
+                "explanation": q.get("explanation_fa", ""),
+                "won_money": 1000000, "outcome": "win",
+                "points": pts, "progress": m_api_progress_payload(uid),
+            })
+        # برو سوال بعد
+        g["qindex"] += 1
+        g["current_q"] = None
+        g["hidden"] = []
+        safe_reached = (g["qindex"] - 1) in MILLIONAIRE_SAFE
+        try:
+            nq = await m_api_next_question(g)
+        except Exception as e:
+            logger.error("api_answer next gen failed: " + str(e))
+            return web.json_response({"error": "no_questions"}, status=503)
+        return web.json_response({
+            "correct": True, "choice": chosen, "correct_choice": correct,
+            "explanation": q.get("explanation_fa", ""),
+            "money_now": money_now, "safe_reached": safe_reached,
+            "next_question": m_api_public_question(nq),
+            "qindex": g["qindex"],
+            "lifelines": {"fifty": not g["used_5050"], "skip": not g["used_skip"]},
+        })
+    else:
+        # باخت → پول safe haven
+        money = m_money_at(g["qindex"])
+        m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
+                    money, g["correct_count"], False)
+        pts = 0
+        if money >= 32000: pts = 60
+        elif money >= 1000: pts = 30
+        if pts > 0:
+            add_points(uid, pts, "miniapp millionaire lose L" + str(g["level_index"]+1))
+        g["active"] = False
+        return web.json_response({
+            "correct": False, "choice": chosen, "correct_choice": correct,
+            "explanation": q.get("explanation_fa", ""),
+            "won_money": money, "outcome": "lose",
+            "points": pts, "progress": m_api_progress_payload(uid),
+        })
+
+async def api_lifeline(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    g = M_API_GAMES.get(uid)
+    if not g or not g.get("active") or not g.get("current_q"):
+        return web.json_response({"error": "no_active_game"}, status=400)
+    kind = data.get("kind")
+    q = g["current_q"]
+
+    if kind == "fifty":
+        if g["used_5050"]:
+            return web.json_response({"error": "already_used"}, status=400)
+        g["used_5050"] = True
+        import random as _r
+        wrong = [L for L in ("A", "B", "C", "D") if L != q["correct"]]
+        _r.shuffle(wrong)
+        g["hidden"] = wrong[:2]
+        return web.json_response({"hidden": g["hidden"],
+                                  "lifelines": {"fifty": False, "skip": not g["used_skip"]}})
+    elif kind == "skip":
+        if g["used_skip"]:
+            return web.json_response({"error": "already_used"}, status=400)
+        g["used_skip"] = True
+        g["current_q"] = None
+        g["hidden"] = []
+        try:
+            nq = await m_api_next_question(g)
+        except Exception as e:
+            return web.json_response({"error": "no_questions"}, status=503)
+        return web.json_response({"next_question": m_api_public_question(nq),
+                                  "qindex": g["qindex"],
+                                  "lifelines": {"fifty": not g["used_5050"], "skip": False}})
+    return web.json_response({"error": "bad_kind"}, status=400)
+
+async def api_walk(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    g = M_API_GAMES.get(uid)
+    if not g or not g.get("active"):
+        return web.json_response({"error": "no_active_game"}, status=400)
+    money = MILLIONAIRE_LADDER[g["qindex"] - 1] if g["qindex"] > 0 else 0
+    m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
+                money, g["correct_count"], False)
+    pts = 0
+    if money >= 32000: pts = 60
+    elif money >= 1000: pts = 30
+    elif money > 0: pts = 10
+    if pts > 0:
+        add_points(uid, pts, "miniapp millionaire walk L" + str(g["level_index"]+1))
+    g["active"] = False
+    return web.json_response({
+        "outcome": "walk", "won_money": money, "points": pts,
+        "correct_choice": g["current_q"]["correct"] if g.get("current_q") else None,
+        "explanation": g["current_q"].get("explanation_fa", "") if g.get("current_q") else "",
+        "progress": m_api_progress_payload(uid),
+    })
+
+async def api_leaderboard(request):
+    from aiohttp import web
+    data = await request.json() if request.body_exists else {}
+    user = m_api_user_from_request(data)
+    me = user["id"] if user else None
+    rows = m_weekly_leaderboard()
+    out = []
+    for i, r in enumerate(rows):
+        out.append({
+            "rank": i + 1,
+            "name": r["name"],
+            "money": int(r["week_money"]),
+            "millions": int(r["millions"]),
+            "is_me": (r["telegram_id"] == me),
+        })
+    return web.json_response({"leaderboard": out})
+
+async def api_progress(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    # مطمئن شو کاربر ثبت شده
+    if not get_user(uid):
+        nm = (user.get("first_name", "") + " " + user.get("last_name", "")).strip() or user.get("username", "Player")
+        save_user(uid, nm, "MiniApp")
+    return web.json_response({
+        "progress": m_api_progress_payload(uid),
+        "name": user.get("first_name", "Player"),
+    })
+
+async def api_index(request):
+    from aiohttp import web
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "millionaire.html")
+    if os.path.exists(path):
+        return web.FileResponse(path)
+    return web.Response(text="Mini App file not found.", status=404)
+
+async def start_web_server(app_ptb):
+    """وب‌سرور aiohttp رو کنار bot بالا میاره."""
+    try:
+        from aiohttp import web
+    except Exception as e:
+        logger.error("aiohttp not installed — Mini App API disabled: " + str(e))
+        return
+    web_app = web.Application()
+    web_app.router.add_get("/", api_index)
+    web_app.router.add_get("/health", api_health)
+    web_app.router.add_post("/api/start", api_start)
+    web_app.router.add_post("/api/answer", api_answer)
+    web_app.router.add_post("/api/lifeline", api_lifeline)
+    web_app.router.add_post("/api/walk", api_walk)
+    web_app.router.add_post("/api/leaderboard", api_leaderboard)
+    web_app.router.add_post("/api/progress", api_progress)
+    runner = web.AppRunner(web_app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", "8080"))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info("Mini App web server running on port " + str(port))
+
+
+async def _on_post_init(application):
+    """بعد از init شدن bot، وب‌سرور Mini App رو هم بالا میاره (همون event loop)."""
+    await start_web_server(application)
+
+
 def main():
     init_db()
-    app = Application.builder().token(BOT_TOKEN).build()
+    # پر کردن یک‌باره‌ی بانک سوالات اگه خالیه (در صورت تنظیم env)
+    if os.environ.get("BOOTSTRAP_QUESTIONS", "").lower() in ("1", "true", "yes"):
+        try:
+            m_bootstrap_bank(target_per_level=100)
+        except Exception as e:
+            logger.error("bootstrap bank failed: " + str(e))
+    app = Application.builder().token(BOT_TOKEN).post_init(_on_post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("quit", quit_cmd))
@@ -3702,6 +4529,7 @@ def main():
     app.add_handler(CommandHandler("myprogress", myprogress_cmd))
     app.add_handler(CommandHandler("report", report_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
+    app.add_handler(CommandHandler("mqstats", mqstats_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     logger.info("Bot is running...")

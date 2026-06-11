@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Millionaire — Emad Eng Lab</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  :root{
+    --gold:#ffd84d; --orange:#d98a2b; --orange-bright:#ffb347;
+    --blue:#2a5da3; --blue-deep:#08183a; --panel:rgba(8,24,56,.85);
+    --green:#3fae5a; --red:#e0473f;
+  }
+  html,body{ height:100%; }
+  body{
+    font-family:'Segoe UI',Tahoma,sans-serif;
+    background:#04122e; color:#fff; overflow-x:hidden;
+    user-select:none; -webkit-user-select:none;
+  }
+  #app{ max-width:480px; margin:0 auto; min-height:100vh; display:flex; flex-direction:column; }
+
+  /* ── Stage / header ── */
+  .stage{
+    position:relative; height:120px; flex-shrink:0;
+    background:radial-gradient(ellipse at 50% 0%, #1e4480 0%, #0a1f47 55%, #04122e 100%);
+    overflow:hidden;
+  }
+  .beam{ position:absolute; top:0; width:2px; height:100%; background:linear-gradient(#7db4ff,transparent); }
+  .logo{ position:absolute; top:16px; left:50%; transform:translateX(-50%); text-align:center; width:100%; }
+  .logo .t1{ color:var(--gold); font-size:20px; font-weight:600; letter-spacing:1px; }
+  .logo .t2{ color:#9ec3f5; font-size:10px; letter-spacing:3px; margin-top:2px; }
+  .host-bubble{
+    position:absolute; bottom:9px; left:12px; right:12px;
+    background:var(--panel); border:1px solid var(--blue); border-radius:12px;
+    padding:7px 12px; font-size:12.5px; color:#dce8fb; line-height:1.5;
+    min-height:30px; transition:opacity .3s;
+  }
+
+  /* ── Main area ── */
+  .main{ flex:1; display:flex; gap:10px; padding:12px; }
+  .left{ flex:1; min-width:0; display:flex; flex-direction:column; }
+  .ladder-col{
+    width:92px; flex-shrink:0; background:rgba(6,18,46,.7);
+    border:1px solid #1a3a6b; border-radius:10px; padding:6px 5px; align-self:flex-start;
+  }
+  .lrow{ display:flex; justify-content:space-between; align-items:center; border-radius:6px; padding:3px 5px; margin:1px 0; transition:all .25s; }
+  .lrow .ln{ font-size:9px; }
+  .lrow .lm{ font-size:9px; font-weight:500; }
+  .lrow.cur{ background:var(--orange-bright); }
+  .lrow.cur .ln,.lrow.cur .lm{ color:#3a1d00; font-weight:700; }
+  .lrow.safe .lm{ color:var(--gold); }
+  .lrow.top .lm{ color:#ff8fae; }
+  .lrow .lm{ color:#bcd2f0; }
+  .lrow.done{ opacity:.45; }
+
+  /* ── Question / meta ── */
+  .meta{ display:flex; justify-content:space-between; align-items:center; margin-bottom:9px; font-size:11.5px; }
+  .meta .qn{ color:var(--gold); font-weight:500; }
+  .meta .pr{ color:#fff; background:#143; border:1px solid var(--green); border-radius:20px; padding:3px 11px; font-size:12px; }
+  .qbox{
+    background:var(--blue-deep); border:1px solid var(--blue); border-radius:12px;
+    padding:14px; text-align:center; font-size:14px; line-height:1.6; margin-bottom:12px;
+    min-height:64px; display:flex; align-items:center; justify-content:center; direction:ltr;
+  }
+  .opts{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .opt{
+    background:linear-gradient(#0a2552,#06163a); border:1.5px solid var(--orange);
+    border-radius:22px; padding:11px 8px; color:#fff; font-size:13px; text-align:center;
+    cursor:pointer; transition:all .2s; direction:ltr; min-height:42px;
+    display:flex; align-items:center; justify-content:center; gap:6px;
+  }
+  .opt .ol{ color:var(--orange-bright); font-weight:700; }
+  .opt:active{ transform:scale(.97); }
+  .opt.hidden{ visibility:hidden; }
+  .opt.selected{ background:linear-gradient(var(--orange-bright),var(--orange)); border-color:#fff; }
+  .opt.selected .ol{ color:#3a1d00; }
+  .opt.correct{ background:linear-gradient(var(--green),#1d7a36)!important; border-color:#bfffb0!important; animation:flash .4s 3; }
+  .opt.wrong{ background:linear-gradient(var(--red),#a01810)!important; border-color:#ffb3ae!important; }
+  .opt.disabled{ pointer-events:none; }
+  @keyframes flash{ 50%{ filter:brightness(1.5); } }
+
+  /* ── Lifelines ── */
+  .lifelines{ display:flex; gap:8px; justify-content:center; margin-top:14px; }
+  .life{
+    background:var(--blue-deep); border:1px solid var(--blue); border-radius:50%;
+    width:42px; height:42px; display:flex; align-items:center; justify-content:center;
+    color:var(--gold); font-size:11px; cursor:pointer; transition:all .2s;
+  }
+  .life:active{ transform:scale(.92); }
+  .life.used{ opacity:.3; pointer-events:none; position:relative; }
+  .life.used::after{ content:'✕'; position:absolute; color:var(--red); font-size:20px; }
+
+  /* ── Screens (start / result / leaderboard) ── */
+  .screen{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px; text-align:center; gap:16px; }
+  .screen h1{ font-size:24px; color:var(--gold); }
+  .screen p{ font-size:14px; color:#bcd2f0; line-height:1.7; }
+  .btn{
+    background:linear-gradient(var(--orange-bright),var(--orange)); color:#3a1d00;
+    border:none; border-radius:24px; padding:13px 32px; font-size:15px; font-weight:700;
+    cursor:pointer; transition:all .2s; font-family:inherit;
+  }
+  .btn:active{ transform:scale(.96); }
+  .btn.sec{ background:transparent; border:1.5px solid var(--blue); color:#bcd2f0; }
+  .info-card{ background:var(--panel); border:1px solid var(--blue); border-radius:14px; padding:16px 20px; width:100%; max-width:320px; }
+  .info-row{ display:flex; justify-content:space-between; padding:6px 0; font-size:13px; }
+  .info-row span:first-child{ color:#9ec3f5; }
+  .money-big{ font-size:34px; color:var(--gold); font-weight:700; margin:6px 0; }
+  .hidden-screen{ display:none!important; }
+
+  /* ── Leaderboard ── */
+  .lb-row{ display:flex; align-items:center; gap:10px; background:var(--panel); border:1px solid #1a3a6b; border-radius:10px; padding:10px 12px; margin:5px 0; width:100%; max-width:340px; }
+  .lb-row.me{ border-color:var(--gold); }
+  .lb-rank{ font-size:15px; font-weight:700; width:28px; color:var(--gold); }
+  .lb-name{ flex:1; text-align:right; font-size:13px; }
+  .lb-money{ font-size:13px; color:var(--green); font-weight:600; direction:ltr; }
+
+  .spinner{ width:38px; height:38px; border:3px solid #1a3a6b; border-top-color:var(--gold); border-radius:50%; animation:spin 1s linear infinite; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  .err{ color:var(--red); font-size:13px; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Stage -->
+  <div class="stage">
+    <div class="beam" style="left:10%;opacity:.4"></div>
+    <div class="beam" style="left:28%;opacity:.3"></div>
+    <div class="beam" style="right:28%;opacity:.3"></div>
+    <div class="beam" style="right:10%;opacity:.4"></div>
+    <div class="logo"><div class="t1">MILLIONAIRE</div><div class="t2">EMAD ENG LAB</div></div>
+    <div class="host-bubble" id="host">💬 خوش اومدی! آماده‌ای میلیونر بشی؟</div>
+  </div>
+
+  <!-- START screen -->
+  <div class="screen" id="screen-start">
+    <h1>🎬 Millionaire</h1>
+    <div class="info-card" id="start-info"><div class="spinner" style="margin:0 auto"></div></div>
+    <button class="btn" id="btn-play" style="display:none">▶️ شروع بازی</button>
+    <button class="btn sec" id="btn-lb1" style="display:none">🏅 لیدربورد هفتگی</button>
+    <div class="err" id="start-err"></div>
+  </div>
+
+  <!-- GAME screen -->
+  <div class="main hidden-screen" id="screen-game">
+    <div class="left">
+      <div class="meta"><span class="qn" id="g-qn">سوال ۱/۱۵</span><span class="pr" id="g-prize">€100</span></div>
+      <div class="qbox" id="g-question">...</div>
+      <div class="opts" id="g-opts"></div>
+      <div class="lifelines">
+        <div class="life" id="life-fifty">50:50</div>
+        <div class="life" id="life-skip">🔄</div>
+        <div class="life" id="life-walk">💼</div>
+      </div>
+    </div>
+    <div class="ladder-col" id="g-ladder"></div>
+  </div>
+
+  <!-- RESULT screen -->
+  <div class="screen hidden-screen" id="screen-result">
+    <h1 id="r-title">🎉</h1>
+    <div class="money-big" id="r-money">€0</div>
+    <div class="info-card" id="r-info"></div>
+    <button class="btn" id="btn-again">🔁 بازی دوباره</button>
+    <button class="btn sec" id="btn-lb2">🏅 لیدربورد</button>
+  </div>
+
+  <!-- LEADERBOARD screen -->
+  <div class="screen hidden-screen" id="screen-lb">
+    <h1>🏅 لیدربورد هفتگی</h1>
+    <div id="lb-list" style="width:100%;display:flex;flex-direction:column;align-items:center"><div class="spinner"></div></div>
+    <button class="btn sec" id="btn-back">🔙 برگشت</button>
+  </div>
+
+</div>
+
+<script>
+const tg = window.Telegram ? window.Telegram.WebApp : null;
+if (tg) { tg.ready(); tg.expand(); }
+const INIT = tg ? tg.initData : "";
+
+// ── Sound (Web Audio, no copyrighted files) ──
+let actx;
+function beep(freq, dur, type, vol){
+  try{
+    if(!actx) actx = new (window.AudioContext||window.webkitAudioContext)();
+    const o=actx.createOscillator(), g=actx.createGain();
+    o.type=type||'sine'; o.frequency.value=freq;
+    g.gain.value=vol||0.06; o.connect(g); g.connect(actx.destination);
+    o.start(); o.stop(actx.currentTime+dur);
+    g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime+dur);
+  }catch(e){}
+}
+const snd = {
+  tap:   ()=>beep(330,.08,'square',.04),
+  lock:  ()=>{beep(180,.15,'sawtooth',.05);},
+  right: ()=>{beep(523,.12);setTimeout(()=>beep(784,.22),120);},
+  wrong: ()=>{beep(200,.3,'sawtooth',.07);},
+  win:   ()=>{[523,659,784,1047].forEach((f,i)=>setTimeout(()=>beep(f,.3),i*150));},
+};
+
+// ── State ──
+let ladder=[], qindex=0, answering=false, currentLifelines={fifty:true,skip:true};
+
+// ── Helpers ──
+function money(n){ return '€'+n.toLocaleString('en-US'); }
+const faNum = s => (''+s).replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
+function show(id){
+  ['screen-start','screen-game','screen-result','screen-lb'].forEach(s=>{
+    document.getElementById(s).classList.add('hidden-screen');
+  });
+  document.getElementById(id).classList.remove('hidden-screen');
+}
+function setHost(txt){ document.getElementById('host').innerHTML = txt; }
+
+async function api(path, body){
+  const res = await fetch(path, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(Object.assign({initData:INIT}, body||{}))
+  });
+  if(!res.ok){ const e=await res.json().catch(()=>({error:'http_'+res.status})); throw new Error(e.error||'error'); }
+  return res.json();
+}
+
+// ── Ladder render ──
+function renderLadder(curIdx){
+  const el=document.getElementById('g-ladder');
+  let html='';
+  for(let i=ladder.length-1;i>=0;i--){
+    const r=ladder[i];
+    const cls=['lrow'];
+    if(i===curIdx) cls.push('cur');
+    else if(i<curIdx) cls.push('done');
+    if(r.safe) cls.push('safe');
+    if(r.top) cls.push('top');
+    const mark = r.top?'🏆':(r.safe?'🔒':'');
+    html+=`<div class="${cls.join(' ')}"><span class="ln">${faNum(r.step)}</span><span class="lm">${mark}${money(r.money)}</span></div>`;
+  }
+  el.innerHTML=html;
+}
+
+// ── Render a question ──
+function renderQuestion(q, idx){
+  qindex=idx; answering=false;
+  document.getElementById('g-qn').textContent='سوال '+faNum(idx+1)+'/'+faNum(15);
+  document.getElementById('g-prize').textContent=money(ladder[idx].money)+(ladder[idx].safe?' 🔒':'');
+  document.getElementById('g-question').textContent=q.question;
+  const cefr=['A2','A2','A2','B1','B1','B1','B1','B2','B2','B2','B2','C1','C1','C1','C1'][idx];
+  setHost('💬 سوال '+faNum(idx+1)+' برای '+money(ladder[idx].money)+'  ·  '+cefr);
+  const opts=document.getElementById('g-opts'); opts.innerHTML='';
+  ['A','B','C','D'].forEach(L=>{
+    const d=document.createElement('div');
+    d.className='opt'; d.dataset.letter=L;
+    d.innerHTML='<span class="ol">'+L+'</span> '+q.options[L];
+    d.onclick=()=>chooseAnswer(L,d);
+    opts.appendChild(d);
+  });
+  renderLadder(idx);
+  updateLifelineUI();
+}
+
+function updateLifelineUI(){
+  document.getElementById('life-fifty').classList.toggle('used', !currentLifelines.fifty);
+  document.getElementById('life-skip').classList.toggle('used', !currentLifelines.skip);
+}
+
+// ── Answer flow ──
+async function chooseAnswer(L, el){
+  if(answering) return;
+  answering=true;
+  snd.lock();
+  document.querySelectorAll('.opt').forEach(o=>o.classList.add('disabled'));
+  el.classList.add('selected');
+  setHost('🔒 جواب نهایی... '+L+' ؟');
+
+  await new Promise(r=>setTimeout(r,900)); // tension pause
+
+  let res;
+  try{ res = await api('/api/answer',{choice:L}); }
+  catch(e){ setHost('⚠️ خطا: '+e.message); answering=false; return; }
+
+  // reveal
+  document.querySelectorAll('.opt').forEach(o=>{
+    if(o.dataset.letter===res.correct_choice) o.classList.add('correct');
+  });
+  if(!res.correct){ el.classList.remove('selected'); el.classList.add('wrong'); }
+
+  if(res.correct){
+    snd.right();
+    setHost('✅ درست! '+(res.explanation||''));
+  } else {
+    snd.wrong();
+    setHost('❌ جواب درست: '+res.correct_choice+(res.explanation?' — '+res.explanation:''));
+  }
+
+  await new Promise(r=>setTimeout(r,1700));
+
+  if(res.outcome==='win'){ snd.win(); return endGame(res,'win'); }
+  if(res.outcome==='lose'){ return endGame(res,'lose'); }
+
+  // continue
+  if(res.safe_reached) setHost('🔒 به مرحله امن رسیدی!');
+  currentLifelines=res.lifelines||currentLifelines;
+  renderQuestion(res.next_question, res.qindex);
+}
+
+// ── Lifelines ──
+document.getElementById('life-fifty').onclick=async()=>{
+  if(!currentLifelines.fifty||answering) return;
+  snd.tap();
+  try{
+    const res=await api('/api/lifeline',{kind:'fifty'});
+    res.hidden.forEach(L=>{
+      const o=document.querySelector('.opt[data-letter="'+L+'"]');
+      if(o) o.classList.add('hidden');
+    });
+    currentLifelines=res.lifelines; updateLifelineUI();
+    setHost('✂️ دو گزینه‌ی غلط حذف شد!');
+  }catch(e){ setHost('⚠️ '+e.message); }
+};
+document.getElementById('life-skip').onclick=async()=>{
+  if(!currentLifelines.skip||answering) return;
+  snd.tap();
+  try{
+    const res=await api('/api/lifeline',{kind:'skip'});
+    currentLifelines=res.lifelines;
+    setHost('🔄 سوال عوض شد');
+    renderQuestion(res.next_question, res.qindex);
+  }catch(e){ setHost('⚠️ '+e.message); }
+};
+document.getElementById('life-walk').onclick=async()=>{
+  if(answering) return;
+  if(tg){ tg.showConfirm('با پول فعلی بیرون بری؟', async(ok)=>{ if(ok) doWalk(); }); }
+  else if(confirm('با پول فعلی بیرون بری؟')) doWalk();
+};
+async function doWalk(){
+  try{ const res=await api('/api/walk',{}); endGame(res,'walk'); }
+  catch(e){ setHost('⚠️ '+e.message); }
+}
+
+// ── End game ──
+function endGame(res, outcome){
+  show('screen-result');
+  const title=document.getElementById('r-title');
+  const info=document.getElementById('r-info');
+  document.getElementById('r-money').textContent=money(res.won_money||0);
+  let head, sub='';
+  if(outcome==='win'){ head='🎉 میلیونر شدی!'; sub='فصل بعدی آزاد شد: '+res.progress.level_label; }
+  else if(outcome==='walk'){ head='💼 با پول بیرون اومدی'; sub='تصمیم عاقلانه‌ای بود!'; }
+  else { head='❌ باختی'; sub='دوباره تلاش کن!'; }
+  title.textContent=head;
+  info.innerHTML=
+    '<div class="info-row"><span>نتیجه</span><span>'+sub+'</span></div>'+
+    '<div class="info-row"><span>امتیاز لیدربورد</span><span>+'+(res.points||0)+'</span></div>'+
+    '<div class="info-row"><span>فصل‌های فتح‌شده</span><span>'+faNum(res.progress.completed_levels)+'/'+faNum(res.progress.total_levels)+'</span></div>';
+}
+
+// ── Leaderboard ──
+async function loadLeaderboard(){
+  show('screen-lb');
+  const list=document.getElementById('lb-list');
+  list.innerHTML='<div class="spinner"></div>';
+  try{
+    const res=await api('/api/leaderboard',{});
+    if(!res.leaderboard.length){ list.innerHTML='<p>این هفته هنوز کسی بازی نکرده. اولین نفر باش! 🌟</p>'; return; }
+    const medals=['🥇','🥈','🥉'];
+    list.innerHTML=res.leaderboard.map(r=>
+      '<div class="lb-row'+(r.is_me?' me':'')+'">'+
+      '<span class="lb-rank">'+(r.rank<=3?medals[r.rank-1]:faNum(r.rank))+'</span>'+
+      '<span class="lb-name">'+r.name+(r.millions?' 👑'+faNum(r.millions):'')+(r.is_me?' (تو)':'')+'</span>'+
+      '<span class="lb-money">'+money(r.money)+'</span></div>'
+    ).join('');
+  }catch(e){ list.innerHTML='<p class="err">خطا: '+e.message+'</p>'; }
+}
+
+// ── Start game ──
+async function startGame(){
+  show('screen-game');
+  setHost('🧠 در حال آماده‌سازی...');
+  try{
+    const res=await api('/api/start',{});
+    ladder=res.ladder;
+    currentLifelines=res.lifelines;
+    renderQuestion(res.question, res.qindex);
+  }catch(e){
+    show('screen-start');
+    document.getElementById('start-err').textContent='خطا: '+e.message+' (شاید بانک سوالات خالیه)';
+  }
+}
+
+// ── Init start screen (real progress) ──
+async function loadStartInfo(){
+  const info=document.getElementById('start-info');
+  try{
+    const res=await api('/api/progress',{});
+    const p=res.progress;
+    setHost('💬 سلام '+(res.name||'')+'! آماده‌ای میلیونر بشی؟');
+    info.innerHTML=
+      '<div class="info-row"><span>فصل فعلی</span><span>'+p.level_label+'</span></div>'+
+      '<div class="info-row"><span>فصل‌های فتح‌شده</span><span>'+faNum(p.completed_levels)+'/'+faNum(p.total_levels)+'</span></div>'+
+      '<div class="info-row"><span>رکورد</span><span>'+money(p.best_money)+'</span></div>'+
+      '<div class="info-row"><span>کمک‌ها</span><span>۵۰:۵۰ · تعویض سوال</span></div>';
+    document.getElementById('btn-play').style.display='';
+    document.getElementById('btn-lb1').style.display='';
+  }catch(e){
+    info.innerHTML='<p class="err">خطا در اتصال: '+e.message+'</p>';
+  }
+}
+
+// ── Wire buttons ──
+document.getElementById('btn-play').onclick=()=>{ snd.tap(); startGame(); };
+document.getElementById('btn-again').onclick=()=>{ snd.tap(); startGame(); };
+document.getElementById('btn-lb1').onclick=()=>{ snd.tap(); loadLeaderboard(); };
+document.getElementById('btn-lb2').onclick=()=>{ snd.tap(); loadLeaderboard(); };
+document.getElementById('btn-back').onclick=()=>{ snd.tap(); show('screen-start'); };
+
+// ── Boot ──
+if(!INIT){
+  document.getElementById('start-info').innerHTML=
+    '<p class="err">این صفحه باید از داخل تلگرام باز بشه.</p>';
+} else {
+  loadStartInfo();
+}
+</script>
+</body>
+</html>
