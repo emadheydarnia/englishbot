@@ -126,6 +126,10 @@
   .spinner{ width:38px; height:38px; border:3px solid #1a3a6b; border-top-color:var(--gold); border-radius:50%; animation:spin 1s linear infinite; }
   @keyframes spin{ to{ transform:rotate(360deg); } }
   .err{ color:var(--red); font-size:13px; }
+  .brand{ margin-top:20px; padding:16px; text-align:center; border-top:1px solid var(--blue); width:100%; }
+  .brand-title{ font-size:14px; font-weight:700; color:var(--gold); margin-bottom:8px; }
+  .brand-link{ display:block; font-size:12.5px; color:#9ec3f5; text-decoration:none; padding:4px 0; }
+  .brand-link:active{ opacity:.6; }
 </style>
 </head>
 <body>
@@ -148,6 +152,12 @@
     <button class="btn" id="btn-play" style="display:none">▶️ شروع بازی</button>
     <button class="btn sec" id="btn-lb1" style="display:none">🏅 لیدربورد هفتگی</button>
     <div class="err" id="start-err"></div>
+    <div class="brand">
+      <div class="brand-title">Emad English Lab</div>
+      <a class="brand-link" href="https://t.me/emadenglishlab" target="_blank">📢 Channel: @emadenglishlab</a>
+      <a class="brand-link" href="https://t.me/emadenglishbot" target="_blank">🤖 Bot: @emadenglishbot</a>
+      <a class="brand-link" href="https://instagram.com/emadheydarnia" target="_blank">📸 Instagram: @emadheydarnia</a>
+    </div>
   </div>
 
   <!-- GAME screen -->

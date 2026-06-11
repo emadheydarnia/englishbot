@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Leitner Box — Emad Eng Lab</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  *{ margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  :root{
+    --bg:#0e1726; --panel:#16223a; --panel2:#1d2c49; --line:#27395e;
+    --accent:#4f8cff; --accent2:#6aa6ff; --gold:#ffd84d;
+    --green:#36c46a; --red:#e25563; --text:#eaf1ff; --dim:#9fb3d4;
+  }
+  html,body{ height:100%; }
+  body{ font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--text); overflow-x:hidden; }
+  #app{ max-width:480px; margin:0 auto; min-height:100vh; display:flex; flex-direction:column; }
+  header{
+    padding:16px; text-align:center; border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,#16223a,#0e1726);
+  }
+  header h1{ font-size:19px; color:var(--gold); }
+  header .sub{ font-size:12px; color:var(--dim); margin-top:3px; }
+
+  .tabs{ display:flex; gap:6px; padding:10px 12px; }
+  .tab{
+    flex:1; padding:9px; text-align:center; border-radius:10px; font-size:13px;
+    background:var(--panel); color:var(--dim); cursor:pointer; border:1px solid transparent; transition:all .2s;
+  }
+  .tab.active{ background:var(--panel2); color:var(--text); border-color:var(--accent); }
+
+  .screen{ flex:1; padding:14px; display:none; }
+  .screen.active{ display:block; }
+
+  .card{ background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:12px; }
+  label{ display:block; font-size:12px; color:var(--dim); margin-bottom:5px; }
+  textarea, input{
+    width:100%; background:var(--bg); border:1px solid var(--line); border-radius:10px;
+    color:var(--text); padding:11px; font-size:14px; font-family:inherit; resize:vertical;
+  }
+  textarea:focus, input:focus{ outline:none; border-color:var(--accent); }
+  .btn{
+    background:linear-gradient(var(--accent2),var(--accent)); color:#fff; border:none;
+    border-radius:11px; padding:12px; font-size:14px; font-weight:600; cursor:pointer;
+    width:100%; margin-top:10px; transition:transform .1s; font-family:inherit;
+  }
+  .btn:active{ transform:scale(.98); }
+  .btn.sec{ background:var(--panel2); border:1px solid var(--line); }
+  .btn.green{ background:linear-gradient(#46d97c,#2ba558); }
+  .btn.red{ background:linear-gradient(#f0707d,#cf3848); }
+  .btn.row{ width:auto; flex:1; margin-top:0; }
+  .hint{ font-size:11.5px; color:var(--dim); margin-top:8px; line-height:1.6; }
+
+  .stats-grid{ display:flex; gap:6px; margin-bottom:12px; }
+  .box-stat{ flex:1; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 4px; text-align:center; }
+  .box-stat .n{ font-size:18px; font-weight:700; color:var(--gold); }
+  .box-stat .l{ font-size:10px; color:var(--dim); margin-top:2px; }
+
+  .msg{ text-align:center; font-size:13px; color:var(--dim); padding:30px 10px; line-height:1.7; }
+  .due-badge{ display:inline-block; background:var(--accent); color:#fff; border-radius:20px; padding:2px 10px; font-size:12px; font-weight:600; }
+
+  /* Review card */
+  .rcard{
+    background:linear-gradient(160deg,#1d2c49,#16223a); border:1px solid var(--line);
+    border-radius:16px; padding:26px 18px; text-align:center; min-height:150px;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;
+  }
+  .rcard .front{ font-size:22px; font-weight:600; word-break:break-word; }
+  .rcard .back{ font-size:18px; color:var(--gold); word-break:break-word; border-top:1px dashed var(--line); padding-top:14px; width:100%; }
+  .rcard .boxtag{ font-size:11px; color:var(--dim); }
+  .review-actions{ display:flex; gap:8px; margin-top:14px; }
+  .progress-line{ text-align:center; font-size:12px; color:var(--dim); margin-bottom:10px; }
+
+  .list-item{ display:flex; align-items:center; gap:8px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:6px; }
+  .list-item .lf{ flex:1; }
+  .list-item .lf .a{ font-size:13px; }
+  .list-item .lf .b{ font-size:12px; color:var(--dim); margin-top:2px; }
+  .list-item .bx{ font-size:11px; color:var(--gold); }
+  .del{ color:var(--red); cursor:pointer; font-size:16px; padding:4px; }
+  .spinner{ width:34px; height:34px; border:3px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:spin 1s linear infinite; margin:30px auto; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  .err{ color:var(--red); font-size:12.5px; text-align:center; margin-top:8px; }
+  .ok{ color:var(--green); font-size:12.5px; text-align:center; margin-top:8px; }
+  .toggle{ width:46px; height:26px; background:var(--line); border-radius:20px; position:relative; cursor:pointer; transition:background .2s; flex-shrink:0; }
+  .toggle.on{ background:var(--green); }
+  .toggle .knob{ position:absolute; top:3px; left:3px; width:20px; height:20px; background:#fff; border-radius:50%; transition:left .2s; }
+  .toggle.on .knob{ left:23px; }
+  .brand{ margin-top:18px; padding:16px; text-align:center; border-top:1px solid var(--line); }
+  .brand-title{ font-size:14px; font-weight:700; color:var(--gold); margin-bottom:8px; }
+  .brand-link{ display:block; font-size:12.5px; color:var(--accent2); text-decoration:none; padding:4px 0; }
+  .brand-link:active{ opacity:.6; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>📦 Leitner Box</h1>
+    <div class="sub" id="hdr-sub">Spaced repetition flashcards</div>
+  </header>
+
+  <div class="tabs">
+    <div class="tab active" id="tab-review" onclick="switchTab('review')">📚 Review</div>
+    <div class="tab" id="tab-add" onclick="switchTab('add')">➕ Add</div>
+    <div class="tab" id="tab-cards" onclick="switchTab('cards')">🗂 Cards</div>
+  </div>
+
+  <!-- REVIEW -->
+  <div class="screen active" id="screen-review">
+    <div id="review-content"><div class="spinner"></div></div>
+  </div>
+
+  <!-- ADD -->
+  <div class="screen" id="screen-add">
+    <div class="card">
+      <label>Word / Front</label>
+      <input id="add-front" placeholder="e.g. ubiquitous" autocomplete="off">
+      <label style="margin-top:12px">Meaning / Back</label>
+      <textarea id="add-back" rows="2" placeholder="معنی یا توضیح..."></textarea>
+      <button class="btn" onclick="addCard()">➕ Add to box 1</button>
+      <div id="add-msg"></div>
+      <div class="hint">
+        💡 Tip: You can paste many cards at once — one per line, using <b>=</b> :<br>
+        <code>ubiquitous = همه‌جا حاضر</code><br>
+        <code>resilient = منعطف، مقاوم</code><br>
+        Just paste them in the "Front" box and tap Add.
+      </div>
+    </div>
+  </div>
+
+  <!-- CARDS -->
+  <div class="screen" id="screen-cards">
+    <div class="stats-grid" id="cards-stats"></div>
+    <div class="card" style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px">
+      <div><div style="font-size:13px">🔔 Daily reminder</div><div style="font-size:11px;color:var(--dim)">Remind me at 11:00 (Iran) when cards are due</div></div>
+      <div id="rem-toggle" class="toggle" onclick="toggleReminder()"><div class="knob"></div></div>
+    </div>
+    <div id="cards-list"><div class="spinner"></div></div>
+  </div>
+
+  <!-- Persistent branding footer (shows on every tab) -->
+  <div class="brand">
+    <div class="brand-title">Emad English Lab</div>
+    <a class="brand-link" href="https://t.me/emadenglishlab" target="_blank">📢 Channel: @emadenglishlab</a>
+    <a class="brand-link" href="https://t.me/emadenglishbot" target="_blank">🤖 Bot: @emadenglishbot</a>
+    <a class="brand-link" href="https://instagram.com/emadheydarnia" target="_blank">📸 Instagram: @emadheydarnia</a>
+  </div>
+</div>
+
+<script>
+const tg = window.Telegram ? window.Telegram.WebApp : null;
+if(tg){ tg.ready(); tg.expand(); }
+const INIT = tg ? tg.initData : "";
+
+let dueCards=[], reviewIdx=0, revealed=false;
+
+async function api(path, body){
+  const res=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(Object.assign({initData:INIT}, body||{}))});
+  if(!res.ok){ const e=await res.json().catch(()=>({error:'http_'+res.status})); throw new Error(e.error||'error'); }
+  return res.json();
+}
+
+function switchTab(name){
+  ['review','add','cards'].forEach(t=>{
+    document.getElementById('tab-'+t).classList.toggle('active', t===name);
+    document.getElementById('screen-'+t).classList.toggle('active', t===name);
+  });
+  if(name==='review') loadReview();
+  if(name==='cards') loadCards();
+}
+
+// ── ADD ──
+async function addCard(){
+  const frontRaw=document.getElementById('add-front').value.trim();
+  const back=document.getElementById('add-back').value.trim();
+  const msg=document.getElementById('add-msg');
+  msg.textContent='';
+  if(!frontRaw){ msg.className='err'; msg.textContent='Please enter a word.'; return; }
+
+  // multi-line paste with "=" → batch add
+  const lines=frontRaw.split('\n').map(s=>s.trim()).filter(Boolean);
+  const batch=lines.filter(l=>l.includes('='));
+  try{
+    if(batch.length>=1 && !back){
+      let added=0;
+      for(const line of batch){
+        const idx=line.indexOf('=');
+        const f=line.slice(0,idx).trim();
+        const b=line.slice(idx+1).trim();
+        if(f && b){ await api('/api/leitner/add',{front:f,back:b}); added++; }
+      }
+      msg.className='ok'; msg.textContent='✅ Added '+added+' card(s)!';
+    } else {
+      if(!back){ msg.className='err'; msg.textContent='Please enter the meaning.'; return; }
+      await api('/api/leitner/add',{front:frontRaw,back:back});
+      msg.className='ok'; msg.textContent='✅ Card added to box 1!';
+    }
+    document.getElementById('add-front').value='';
+    document.getElementById('add-back').value='';
+  }catch(e){ msg.className='err'; msg.textContent='Error: '+e.message; }
+}
+
+// ── REVIEW ──
+async function loadReview(){
+  const c=document.getElementById('review-content');
+  c.innerHTML='<div class="spinner"></div>';
+  try{
+    const res=await api('/api/leitner/due',{});
+    dueCards=res.cards; reviewIdx=0; revealed=false;
+    if(!dueCards.length){
+      c.innerHTML='<div class="msg">🎉 Nothing to review right now!<br>All caught up. Add new cards or come back later.<br><br>Total cards: '+res.stats.total+'</div>';
+      return;
+    }
+    renderReviewCard();
+  }catch(e){ c.innerHTML='<div class="err">Error: '+e.message+'</div>'; }
+}
+
+function renderReviewCard(){
+  const c=document.getElementById('review-content');
+  if(reviewIdx>=dueCards.length){
+    c.innerHTML='<div class="msg">✅ Review session complete!<br>Great work. 👏</div>'+
+      '<button class="btn" onclick="loadReview()">🔄 Check again</button>';
+    return;
+  }
+  const card=dueCards[reviewIdx];
+  let html='<div class="progress-line">Card '+(reviewIdx+1)+' of '+dueCards.length+'  ·  <span class="due-badge">'+dueCards.length+' due</span></div>';
+  html+='<div class="rcard"><div class="boxtag">📦 Box '+card.box+'</div><div class="front">'+escapeHtml(card.front)+'</div>';
+  if(revealed){
+    html+='<div class="back">'+escapeHtml(card.back)+'</div></div>';
+    html+='<div class="review-actions">'+
+      '<button class="btn red row" onclick="answerCard(false)">❌ Didn\'t know</button>'+
+      '<button class="btn green row" onclick="answerCard(true)">✅ Knew it</button></div>';
+  } else {
+    html+='</div><button class="btn" onclick="reveal()">👁 Show meaning</button>';
+  }
+  c.innerHTML=html;
+}
+
+function reveal(){ revealed=true; renderReviewCard(); }
+
+async function answerCard(knew){
+  const card=dueCards[reviewIdx];
+  try{ await api('/api/leitner/review',{card_id:card.id, knew:knew}); }
+  catch(e){ /* ادامه بده حتی اگه خطا */ }
+  reviewIdx++; revealed=false;
+  renderReviewCard();
+}
+
+// ── CARDS LIST ──
+async function loadCards(){
+  const list=document.getElementById('cards-list');
+  const statsEl=document.getElementById('cards-stats');
+  list.innerHTML='<div class="spinner"></div>';
+  try{
+    const st=await api('/api/leitner/stats',{});
+    const s=st.stats;
+    let sg='';
+    for(let b=1;b<=5;b++){ sg+='<div class="box-stat"><div class="n">'+(s.by_box[b]||0)+'</div><div class="l">Box '+b+'</div></div>'; }
+    statsEl.innerHTML=sg;
+    document.getElementById('hdr-sub').textContent=s.total+' cards · '+s.due+' due today';
+
+    // وضعیت یادآوری
+    try{
+      const rem=await api('/api/leitner/reminder',{});
+      document.getElementById('rem-toggle').classList.toggle('on', !!rem.reminders_on);
+    }catch(e){}
+
+    const res=await api('/api/leitner/list',{});
+    if(!res.cards.length){ list.innerHTML='<div class="msg">No cards yet.<br>Go to ➕ Add to create your first card!</div>'; return; }
+    list.innerHTML=res.cards.map(c=>
+      '<div class="list-item"><div class="lf"><div class="a">'+escapeHtml(c.front)+'</div><div class="b">'+escapeHtml(c.back)+'</div></div>'+
+      '<div class="bx">📦'+c.box+'</div><div class="del" onclick="delCard('+c.id+')">🗑</div></div>'
+    ).join('');
+  }catch(e){ list.innerHTML='<div class="err">Error: '+e.message+'</div>'; }
+}
+
+async function toggleReminder(){
+  const t=document.getElementById('rem-toggle');
+  const newState=!t.classList.contains('on');
+  t.classList.toggle('on', newState);
+  try{ await api('/api/leitner/reminder',{set:newState}); }
+  catch(e){ t.classList.toggle('on', !newState); }
+}
+
+async function delCard(id){
+  const go=async()=>{ try{ await api('/api/leitner/delete',{card_id:id}); loadCards(); }catch(e){} };
+  if(tg && tg.showConfirm){ tg.showConfirm('Delete this card?', ok=>{ if(ok) go(); }); }
+  else if(confirm('Delete this card?')) go();
+}
+
+function escapeHtml(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// boot
+if(!INIT){
+  document.getElementById('review-content').innerHTML='<div class="err">Please open this from inside Telegram.</div>';
+} else {
+  loadReview();
+}
+</script>
+</body>
+</html>

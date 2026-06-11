@@ -5,7 +5,7 @@ import logging
 import os
 import json
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime, timezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, WebAppInfo
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -18,6 +18,8 @@ EXAMS = {**EXAMS, **IELTS_EXAMS}
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 MINIAPP_URL = os.environ.get("MINIAPP_URL", "")
+# آدرس Mini App جعبه لایتنر (روی همون سرور، مسیر /leitner)
+LEITNER_URL = (MINIAPP_URL.rstrip("/") + "/leitner") if MINIAPP_URL else ""
 TEACHER_ID = int(os.environ.get("TEACHER_ID", "0"))
 EXAM_TIME_MINUTES = int(os.environ.get("EXAM_TIME_MINUTES", "30"))
 import requests
@@ -71,6 +73,7 @@ def init_db():
             )
         """)
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(30)")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reminders_on BOOLEAN DEFAULT TRUE")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS points_log (
                 id SERIAL PRIMARY KEY,
@@ -123,6 +126,21 @@ def init_db():
             )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_mq_level_cefr ON millionaire_questions(level_index, cefr)")
+        # ── Leitner box: کارت‌های هر کاربر ──
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS leitner_cards (
+                id SERIAL PRIMARY KEY,
+                telegram_id BIGINT,
+                front TEXT,
+                back TEXT,
+                box INTEGER DEFAULT 1,
+                due_date DATE DEFAULT CURRENT_DATE,
+                reviews INTEGER DEFAULT 0,
+                correct_reviews INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_leitner_user ON leitner_cards(telegram_id, due_date)")
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         print("DB init error: " + str(e))
@@ -410,6 +428,158 @@ def m_weekly_leaderboard():
         return rows
     except Exception as e:
         print("m_weekly_leaderboard error: " + str(e))
+        return []
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ── LEITNER BOX — Database Helpers ────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+
+# فاصله‌ی مرور هر جعبه (روز)
+LEITNER_INTERVALS = {1: 1, 2: 2, 3: 4, 4: 7, 5: 15}
+LEITNER_MAX_BOX = 5
+
+def leitner_add_card(telegram_id, front, back):
+    """یه کارت جدید به جعبه ۱ اضافه می‌کنه."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO leitner_cards (telegram_id, front, back, box, due_date)
+               VALUES (%s,%s,%s,1,CURRENT_DATE)""",
+            (telegram_id, front.strip()[:500], back.strip()[:1000])
+        )
+        conn.commit(); cur.close(); conn.close()
+        return True
+    except Exception as e:
+        print("leitner_add_card error: " + str(e))
+        return False
+
+def leitner_due_cards(telegram_id, limit=50):
+    """کارت‌هایی که موعد مرورشون رسیده."""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            """SELECT * FROM leitner_cards
+               WHERE telegram_id=%s AND due_date <= CURRENT_DATE
+               ORDER BY box ASC, due_date ASC LIMIT %s""",
+            (telegram_id, limit)
+        )
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return rows
+    except Exception as e:
+        print("leitner_due_cards error: " + str(e))
+        return []
+
+def leitner_review(telegram_id, card_id, knew):
+    """نتیجه‌ی مرور یه کارت: knew=True یعنی بلد بود (جعبه بالاتر)، False یعنی برگرده جعبه ۱."""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM leitner_cards WHERE id=%s AND telegram_id=%s", (card_id, telegram_id))
+        card = cur.fetchone()
+        if not card:
+            cur.close(); conn.close()
+            return False
+        if knew:
+            new_box = min(card["box"] + 1, LEITNER_MAX_BOX)
+            correct_inc = 1
+        else:
+            new_box = 1
+            correct_inc = 0
+        interval = LEITNER_INTERVALS.get(new_box, 1)
+        cur.execute(
+            """UPDATE leitner_cards
+               SET box=%s, due_date=CURRENT_DATE + %s, reviews=reviews+1,
+                   correct_reviews=correct_reviews+%s
+               WHERE id=%s AND telegram_id=%s""",
+            (new_box, interval, correct_inc, card_id, telegram_id)
+        )
+        conn.commit(); cur.close(); conn.close()
+        return True
+    except Exception as e:
+        print("leitner_review error: " + str(e))
+        return False
+
+def leitner_delete_card(telegram_id, card_id):
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM leitner_cards WHERE id=%s AND telegram_id=%s", (card_id, telegram_id))
+        conn.commit(); cur.close(); conn.close()
+        return True
+    except Exception as e:
+        print("leitner_delete_card error: " + str(e))
+        return False
+
+def leitner_stats(telegram_id):
+    """تعداد کارت در هر جعبه + تعداد موعد‌رسیده."""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            """SELECT box, COUNT(*) as cnt FROM leitner_cards
+               WHERE telegram_id=%s GROUP BY box""",
+            (telegram_id,)
+        )
+        by_box = {r["box"]: r["cnt"] for r in cur.fetchall()}
+        cur.execute(
+            "SELECT COUNT(*) as due FROM leitner_cards WHERE telegram_id=%s AND due_date <= CURRENT_DATE",
+            (telegram_id,)
+        )
+        due = cur.fetchone()["due"]
+        cur.execute("SELECT COUNT(*) as total FROM leitner_cards WHERE telegram_id=%s", (telegram_id,))
+        total = cur.fetchone()["total"]
+        cur.close(); conn.close()
+        return {"by_box": by_box, "due": due, "total": total}
+    except Exception as e:
+        print("leitner_stats error: " + str(e))
+        return {"by_box": {}, "due": 0, "total": 0}
+
+def leitner_set_reminders(telegram_id, on):
+    """روشن/خاموش کردن یادآوری روزانه برای یه کاربر."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET reminders_on=%s WHERE telegram_id=%s", (bool(on), telegram_id))
+        conn.commit(); cur.close(); conn.close()
+        return True
+    except Exception as e:
+        print("leitner_set_reminders error: " + str(e))
+        return False
+
+def leitner_get_reminders(telegram_id):
+    """وضعیت یادآوری یه کاربر (پیش‌فرض روشن)."""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT reminders_on FROM users WHERE telegram_id=%s", (telegram_id,))
+        row = cur.fetchone(); cur.close(); conn.close()
+        if row is None or row.get("reminders_on") is None:
+            return True
+        return bool(row["reminders_on"])
+    except Exception as e:
+        print("leitner_get_reminders error: " + str(e))
+        return True
+
+def leitner_users_with_due():
+    """لیست (telegram_id, name, تعداد کارت موعد‌رسیده) برای کاربرانی که یادآوری‌شون روشنه."""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT c.telegram_id, COUNT(*) as due,
+                   COALESCE(u.reminders_on, TRUE) as reminders_on
+            FROM leitner_cards c
+            LEFT JOIN users u ON u.telegram_id = c.telegram_id
+            WHERE c.due_date <= CURRENT_DATE
+            GROUP BY c.telegram_id, u.reminders_on
+            HAVING COALESCE(u.reminders_on, TRUE) = TRUE
+        """)
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return rows
+    except Exception as e:
+        print("leitner_users_with_due error: " + str(e))
         return []
 
 def get_all_users():
@@ -2510,10 +2680,14 @@ def ai_end_keyboard():
 
 def main_reply_keyboard():
     """Reply keyboard — همیشه پایین صفحه"""
-    return ReplyKeyboardMarkup([
+    rows = [
         ["📊 My Score", "📈 My Progress"],
         ["🏆 Leaderboard", "🏠 Main Menu"],
-    ], resize_keyboard=True, one_time_keyboard=False)
+    ]
+    # دکمه‌ی جعبه لایتنر (Mini App) — فقط اگه آدرس تنظیم شده
+    if LEITNER_URL:
+        rows.append([KeyboardButton("📦 Leitner Box", web_app=WebAppInfo(url=LEITNER_URL))])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=False)
 
 def ai_active_keyboard():
     return InlineKeyboardMarkup([
@@ -3017,7 +3191,19 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📌 Commands:\n/start — Main menu\n/help — This help\n"
         "/quit — Submit exam early\n/results — All scores (teacher only)\n"
-        "/endai — End AI session"
+        "/endai — End AI session\n/reminders — Turn daily Leitner reminders on/off\n"
+        "/about — About Emad English Lab"
+    )
+
+async def about_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🎓 Emad English Lab\n"
+        "━━━━━━━━━━━━━━━━\n"
+        "Learn English with exams, AI practice, the Millionaire game, and your own Leitner box.\n\n"
+        "📢 Channel: https://t.me/emadenglishlab\n"
+        "🤖 Bot: https://t.me/emadenglishbot\n"
+        "📸 Instagram: https://instagram.com/emadheydarnia\n\n"
+        "Made with ❤️ by Emad Heydarnia"
     )
 
 async def quit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4684,6 +4870,118 @@ async def api_index(request):
         return web.FileResponse(path)
     return web.Response(text="Mini App file not found.", status=404)
 
+async def api_leitner_index(request):
+    from aiohttp import web
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "leitner.html")
+    if os.path.exists(path):
+        return web.FileResponse(path)
+    return web.Response(text="Leitner Mini App file not found.", status=404)
+
+async def api_leitner_add(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    if not get_user(uid):
+        nm = (user.get("first_name", "") + " " + user.get("last_name", "")).strip() or user.get("username", "Player")
+        save_user(uid, nm, "MiniApp")
+    front = str(data.get("front", "")).strip()
+    back = str(data.get("back", "")).strip()
+    if not front or not back:
+        return web.json_response({"error": "empty"}, status=400)
+    ok = leitner_add_card(uid, front, back)
+    if not ok:
+        return web.json_response({"error": "save_failed"}, status=500)
+    return web.json_response({"ok": True, "stats": leitner_stats(uid)})
+
+async def api_leitner_due(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    cards = leitner_due_cards(uid)
+    out = [{"id": c["id"], "front": c["front"], "back": c["back"], "box": c["box"]} for c in cards]
+    return web.json_response({"cards": out, "stats": leitner_stats(uid)})
+
+async def api_leitner_review(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    try:
+        card_id = int(data.get("card_id"))
+    except Exception:
+        return web.json_response({"error": "bad_id"}, status=400)
+    knew = bool(data.get("knew"))
+    ok = leitner_review(uid, card_id, knew)
+    if not ok:
+        return web.json_response({"error": "review_failed"}, status=400)
+    return web.json_response({"ok": True, "stats": leitner_stats(uid)})
+
+async def api_leitner_stats(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    if not get_user(uid):
+        nm = (user.get("first_name", "") + " " + user.get("last_name", "")).strip() or user.get("username", "Player")
+        save_user(uid, nm, "MiniApp")
+    return web.json_response({"stats": leitner_stats(uid), "name": user.get("first_name", "")})
+
+async def api_leitner_delete(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    try:
+        card_id = int(data.get("card_id"))
+    except Exception:
+        return web.json_response({"error": "bad_id"}, status=400)
+    leitner_delete_card(uid, card_id)
+    return web.json_response({"ok": True, "stats": leitner_stats(uid)})
+
+async def api_leitner_reminder(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    if not get_user(uid):
+        nm = (user.get("first_name", "") + " " + user.get("last_name", "")).strip() or user.get("username", "Player")
+        save_user(uid, nm, "MiniApp")
+    if "set" in data:
+        leitner_set_reminders(uid, bool(data.get("set")))
+    return web.json_response({"reminders_on": leitner_get_reminders(uid)})
+
+async def api_leitner_list(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, front, back, box FROM leitner_cards WHERE telegram_id=%s ORDER BY box, id DESC LIMIT 200", (uid,))
+        rows = cur.fetchall(); cur.close(); conn.close()
+        out = [{"id": r["id"], "front": r["front"], "back": r["back"], "box": r["box"]} for r in rows]
+    except Exception as e:
+        print("api_leitner_list error: " + str(e))
+        out = []
+    return web.json_response({"cards": out})
+
 async def start_web_server(app_ptb):
     """وب‌سرور aiohttp رو کنار bot بالا میاره."""
     try:
@@ -4694,6 +4992,7 @@ async def start_web_server(app_ptb):
     web_app = web.Application()
     web_app.router.add_get("/", api_index)
     web_app.router.add_get("/health", api_health)
+    web_app.router.add_get("/leitner", api_leitner_index)
     web_app.router.add_post("/api/start", api_start)
     web_app.router.add_post("/api/answer", api_answer)
     web_app.router.add_post("/api/timeout", api_timeout)
@@ -4701,6 +5000,13 @@ async def start_web_server(app_ptb):
     web_app.router.add_post("/api/walk", api_walk)
     web_app.router.add_post("/api/leaderboard", api_leaderboard)
     web_app.router.add_post("/api/progress", api_progress)
+    web_app.router.add_post("/api/leitner/add", api_leitner_add)
+    web_app.router.add_post("/api/leitner/due", api_leitner_due)
+    web_app.router.add_post("/api/leitner/review", api_leitner_review)
+    web_app.router.add_post("/api/leitner/stats", api_leitner_stats)
+    web_app.router.add_post("/api/leitner/delete", api_leitner_delete)
+    web_app.router.add_post("/api/leitner/list", api_leitner_list)
+    web_app.router.add_post("/api/leitner/reminder", api_leitner_reminder)
     runner = web.AppRunner(web_app)
     await runner.setup()
     port = int(os.environ.get("PORT", "8080"))
@@ -4712,6 +5018,55 @@ async def start_web_server(app_ptb):
 async def _on_post_init(application):
     """بعد از init شدن bot، وب‌سرور Mini App رو هم بالا میاره (همون event loop)."""
     await start_web_server(application)
+
+
+async def daily_leitner_reminder(context: ContextTypes.DEFAULT_TYPE):
+    """هر روز ساعت ۱۱ صبح ایران (۷:۳۰ UTC) به کاربرانی که کارت موعد‌رسیده دارن یادآوری می‌فرسته."""
+    try:
+        rows = leitner_users_with_due()
+        sent = 0
+        for r in rows:
+            uid = r["telegram_id"]
+            due = r["due"]
+            if not due:
+                continue
+            try:
+                await context.bot.send_message(
+                    chat_id=uid,
+                    text=(
+                        "📦 Leitner Box — Daily Reminder\n\n"
+                        "📚 You have " + str(due) + " card(s) due for review today!\n"
+                        "Tap the 📦 Leitner Box button below to practice. 💪\n\n"
+                        "— Emad English Lab"
+                    )
+                )
+                sent += 1
+            except Exception as e:
+                # کاربر شاید بات رو بلاک کرده — رد شو
+                logger.warning("reminder send failed for " + str(uid) + ": " + str(e))
+            await asyncio.sleep(0.1)
+        logger.info("Daily Leitner reminders sent: " + str(sent))
+    except Exception as e:
+        logger.error("daily_leitner_reminder error: " + str(e))
+
+async def reminders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """روشن/خاموش کردن یادآوری روزانه: /reminders on  یا  /reminders off"""
+    user_id = update.effective_user.id
+    arg = (context.args[0].lower() if context.args else "")
+    if arg in ("on", "روشن"):
+        leitner_set_reminders(user_id, True)
+        await update.message.reply_text("🔔 Daily Leitner reminders are now ON.\nیادآوری روزانه روشن شد.")
+    elif arg in ("off", "خاموش"):
+        leitner_set_reminders(user_id, False)
+        await update.message.reply_text("🔕 Daily Leitner reminders are now OFF.\nیادآوری روزانه خاموش شد.\n\nبرای روشن کردن دوباره: /reminders on")
+    else:
+        cur = leitner_get_reminders(user_id)
+        state = "ON 🔔" if cur else "OFF 🔕"
+        await update.message.reply_text(
+            "📦 Daily Leitner reminders: " + state + "\n\n"
+            "Turn on:  /reminders on\n"
+            "Turn off: /reminders off"
+        )
 
 
 def main():
@@ -4738,8 +5093,20 @@ def main():
     app.add_handler(CommandHandler("report", report_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("mqstats", mqstats_cmd))
+    app.add_handler(CommandHandler("reminders", reminders_cmd))
+    app.add_handler(CommandHandler("about", about_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # یادآوری روزانه‌ی جعبه لایتنر — ۱۱ صبح ایران = ۷:۳۰ UTC
+    try:
+        app.job_queue.run_daily(
+            daily_leitner_reminder,
+            time=dtime(hour=7, minute=30, tzinfo=timezone.utc),
+            name="daily_leitner_reminder",
+        )
+        logger.info("Daily Leitner reminder scheduled for 07:30 UTC (11:00 Iran).")
+    except Exception as e:
+        logger.error("Could not schedule daily reminder: " + str(e))
     logger.info("Bot is running...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
