@@ -58,6 +58,14 @@
   .meta{ display:flex; justify-content:space-between; align-items:center; margin-bottom:9px; font-size:11.5px; }
   .meta .qn{ color:var(--gold); font-weight:500; }
   .meta .pr{ color:#fff; background:#143; border:1px solid var(--green); border-radius:20px; padding:3px 11px; font-size:12px; }
+  .meta .timer{
+    color:#fff; background:#0a2552; border:2px solid var(--blue);
+    border-radius:50%; width:34px; height:34px; display:flex; align-items:center;
+    justify-content:center; font-size:13px; font-weight:700; transition:all .3s;
+  }
+  .meta .timer.warn{ border-color:#ffb347; color:#ffb347; }
+  .meta .timer.danger{ border-color:var(--red); color:#fff; background:var(--red); animation:pulse .6s infinite; }
+  @keyframes pulse{ 50%{ transform:scale(1.12); } }
   .qbox{
     background:var(--blue-deep); border:1px solid var(--blue); border-radius:12px;
     padding:14px; text-align:center; font-size:14px; line-height:1.6; margin-bottom:12px;
@@ -145,7 +153,7 @@
   <!-- GAME screen -->
   <div class="main hidden-screen" id="screen-game">
     <div class="left">
-      <div class="meta"><span class="qn" id="g-qn">سوال ۱/۱۵</span><span class="pr" id="g-prize">€100</span></div>
+      <div class="meta"><span class="qn" id="g-qn">سوال ۱/۱۵</span><span class="timer" id="g-timer">۹۰</span><span class="pr" id="g-prize">€100</span></div>
       <div class="qbox" id="g-question">...</div>
       <div class="opts" id="g-opts"></div>
       <div class="lifelines">
@@ -203,6 +211,7 @@ const snd = {
 
 // ── State ──
 let ladder=[], qindex=0, answering=false, currentLifelines={fifty:true,skip:true,phone:true};
+let timerId=null, timeLeft=90, QUESTION_SECONDS=90;
 
 // ── Helpers ──
 function money(n){ return '€'+n.toLocaleString('en-US'); }
@@ -241,6 +250,50 @@ function renderLadder(curIdx){
   el.innerHTML=html;
 }
 
+// ── Timer ──
+function stopTimer(){ if(timerId){ clearInterval(timerId); timerId=null; } }
+function updateTimerUI(){
+  const el=document.getElementById('g-timer');
+  el.textContent=faNum(timeLeft);
+  el.classList.remove('warn','danger');
+  if(timeLeft<=10) el.classList.add('danger');
+  else if(timeLeft<=30) el.classList.add('warn');
+}
+function startTimer(){
+  stopTimer();
+  timeLeft=QUESTION_SECONDS;
+  updateTimerUI();
+  timerId=setInterval(()=>{
+    timeLeft--;
+    updateTimerUI();
+    if(timeLeft<=10 && timeLeft>0) beep(440,.08,'square',.05); // تیک‌تاک پایانی
+    if(timeLeft<=0){
+      stopTimer();
+      onTimeout();
+    }
+  },1000);
+}
+async function onTimeout(){
+  if(answering) return;
+  answering=true;
+  snd.wrong();
+  setHost('⏰ زمان تموم شد!');
+  document.querySelectorAll('.opt').forEach(o=>o.classList.add('disabled'));
+  try{
+    const res=await api('/api/timeout',{});
+    document.querySelectorAll('.opt').forEach(o=>{
+      if(o.dataset.letter===res.correct_choice) o.classList.add('correct');
+    });
+    setHost('⏰ وقت تموم شد! جواب درست: '+res.correct_choice+(res.explanation?' — '+res.explanation:''));
+    await new Promise(r=>setTimeout(r,1900));
+    endGame(res,'timeout');
+  }catch(e){
+    // اگه سرور گفت هنوز وقت هست (اختلاف ساعت)، بازی رو ادامه بده
+    answering=false;
+    document.querySelectorAll('.opt').forEach(o=>o.classList.remove('disabled'));
+  }
+}
+
 // ── Render a question ──
 function renderQuestion(q, idx){
   qindex=idx; answering=false;
@@ -259,6 +312,7 @@ function renderQuestion(q, idx){
   });
   renderLadder(idx);
   updateLifelineUI();
+  startTimer();
 }
 
 function updateLifelineUI(){
@@ -271,6 +325,7 @@ function updateLifelineUI(){
 async function chooseAnswer(L, el){
   if(answering) return;
   answering=true;
+  stopTimer();
   snd.lock();
   document.querySelectorAll('.opt').forEach(o=>o.classList.add('disabled'));
   el.classList.add('selected');
@@ -300,6 +355,7 @@ async function chooseAnswer(L, el){
 
   if(res.outcome==='win'){ snd.win(); return endGame(res,'win'); }
   if(res.outcome==='lose'){ return endGame(res,'lose'); }
+  if(res.outcome==='timeout'){ return endGame(res,'timeout'); }
 
   // continue
   if(res.safe_reached) setHost('🔒 به مرحله امن رسیدی!');
@@ -347,12 +403,14 @@ document.getElementById('life-walk').onclick=async()=>{
   else if(confirm('با پول فعلی بیرون بری؟')) doWalk();
 };
 async function doWalk(){
+  stopTimer();
   try{ const res=await api('/api/walk',{}); endGame(res,'walk'); }
   catch(e){ setHost('⚠️ '+e.message); }
 }
 
 // ── End game ──
 function endGame(res, outcome){
+  stopTimer();
   show('screen-result');
   const title=document.getElementById('r-title');
   const info=document.getElementById('r-info');
@@ -360,6 +418,7 @@ function endGame(res, outcome){
   let head, sub='';
   if(outcome==='win'){ head='🎉 میلیونر شدی!'; sub='فصل بعدی آزاد شد: '+res.progress.level_label; }
   else if(outcome==='walk'){ head='💼 با پول بیرون اومدی'; sub='تصمیم عاقلانه‌ای بود!'; }
+  else if(outcome==='timeout'){ head='⏰ زمان تموم شد!'; sub='سری بعد سریع‌تر باش!'; }
   else { head='❌ باختی'; sub='دوباره تلاش کن!'; }
   title.textContent=head;
   info.innerHTML=
@@ -394,6 +453,7 @@ async function startGame(){
     const res=await api('/api/start',{});
     ladder=res.ladder;
     currentLifelines=res.lifelines;
+    if(res.seconds) QUESTION_SECONDS=res.seconds;
     renderQuestion(res.question, res.qindex);
   }catch(e){
     show('screen-start');

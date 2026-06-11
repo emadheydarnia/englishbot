@@ -2580,6 +2580,8 @@ MILLIONAIRE_LADDER = [
 ]
 MILLIONAIRE_SAFE = {4: 1000, 9: 32000}   # index سوال (۰-based) که بعدش safe می‌شه
 MILLIONAIRE_TOTAL_Q = 15
+M_QUESTION_SECONDS = 90   # زمان هر سوال (ثانیه)
+M_TIMER_GRACE = 3        # چند ثانیه ارفاق برای تأخیر شبکه
 
 # سطح CEFR هر سوال بر اساس شماره‌اش
 def m_level_for_q(qnum):
@@ -4287,10 +4289,12 @@ def m_api_progress_payload(telegram_id):
 
 async def m_api_next_question(g):
     """سوال بعدی رو از بانک می‌گیره و توی state سرور می‌ذاره."""
+    import time as _t
     qnum = g["qindex"] + 1
     q = await m_generate_question(g["level_index"], qnum, g.get("used_ids", set()))
     g["current_q"] = q
     g["hidden"] = []
+    g["q_started_at"] = _t.time()   # زمان شروع سوال (سمت سرور — برای تایمر امن)
     if q.get("id") is not None:
         g.setdefault("used_ids", set()).add(q["id"])
     return q
@@ -4332,6 +4336,7 @@ async def api_start(request):
         "ladder": m_api_ladder(),
         "progress": m_api_progress_payload(uid),
         "lifelines": {"fifty": True, "skip": True, "phone": True},
+        "seconds": M_QUESTION_SECONDS,
     })
 
 async def api_answer(request):
@@ -4351,6 +4356,27 @@ async def api_answer(request):
 
     q = g["current_q"]
     correct = q["correct"]
+
+    # ── بررسی زمان (سمت سرور) — اگه بیشتر از حد مجاز طول کشیده، تایم‌اوت ──
+    import time as _t
+    started = g.get("q_started_at")
+    if started and (_t.time() - started) > (M_QUESTION_SECONDS + M_TIMER_GRACE):
+        money = m_money_at(g["qindex"])
+        m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
+                    money, g["correct_count"], False)
+        pts = 0
+        if money >= 32000: pts = 60
+        elif money >= 1000: pts = 30
+        if pts > 0:
+            add_points(uid, pts, "miniapp millionaire timeout L" + str(g["level_index"]+1))
+        g["active"] = False
+        return web.json_response({
+            "correct": False, "choice": chosen, "correct_choice": correct,
+            "explanation": q.get("explanation_fa", ""),
+            "won_money": money, "outcome": "timeout",
+            "points": pts, "progress": m_api_progress_payload(uid),
+        })
+
     is_correct = (chosen == correct)
 
     if is_correct:
@@ -4404,6 +4430,40 @@ async def api_answer(request):
             "won_money": money, "outcome": "lose",
             "points": pts, "progress": m_api_progress_payload(uid),
         })
+
+async def api_timeout(request):
+    """فرانت وقتی تایمر صفر شد این رو صدا می‌زنه — مثل جواب غلط (تایم‌اوت)."""
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    g = M_API_GAMES.get(uid)
+    if not g or not g.get("active") or not g.get("current_q"):
+        return web.json_response({"error": "no_active_game"}, status=400)
+    # تأیید سمت سرور که واقعاً زمان تموم شده (جلوگیری از سوءاستفاده)
+    import time as _t
+    started = g.get("q_started_at", 0)
+    if started and (_t.time() - started) < (M_QUESTION_SECONDS - M_TIMER_GRACE):
+        # هنوز زمان هست — تایم‌اوت نامعتبره، نادیده بگیر
+        remaining = int(M_QUESTION_SECONDS - (_t.time() - started))
+        return web.json_response({"error": "not_yet", "remaining": remaining}, status=400)
+    q = g["current_q"]
+    money = m_money_at(g["qindex"])
+    m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
+                money, g["correct_count"], False)
+    pts = 0
+    if money >= 32000: pts = 60
+    elif money >= 1000: pts = 30
+    if pts > 0:
+        add_points(uid, pts, "miniapp millionaire timeout L" + str(g["level_index"]+1))
+    g["active"] = False
+    return web.json_response({
+        "outcome": "timeout", "won_money": money,
+        "correct_choice": q["correct"], "explanation": q.get("explanation_fa", ""),
+        "points": pts, "progress": m_api_progress_payload(uid),
+    })
 
 def m_lifelines_state(g):
     """وضعیت همه‌ی کمک‌ها برای ارسال به فرانت."""
@@ -4582,6 +4642,7 @@ async def start_web_server(app_ptb):
     web_app.router.add_get("/health", api_health)
     web_app.router.add_post("/api/start", api_start)
     web_app.router.add_post("/api/answer", api_answer)
+    web_app.router.add_post("/api/timeout", api_timeout)
     web_app.router.add_post("/api/lifeline", api_lifeline)
     web_app.router.add_post("/api/walk", api_walk)
     web_app.router.add_post("/api/leaderboard", api_leaderboard)
