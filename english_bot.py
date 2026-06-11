@@ -208,6 +208,41 @@ def add_points(telegram_id, points, reason=""):
     except Exception as e:
         print("add_points error: " + str(e))
 
+def award_ai_points(user_id, session):
+    """
+    امتیاز یه AI session رو یک بار (و فقط یک بار) ثبت می‌کنه.
+    شرط: حداقل تعامل معنادار (چند پیام) داشته باشه تا امتیاز الکی داده نشه.
+    این تابع از هر جایی که session تموم می‌شه صدا زده می‌شه (دکمه، /endai، یا تشخیص خودکار).
+    """
+    try:
+        if not session or session.get("points_done"):
+            return
+        topic_k = session.get("topic", "") or ""
+        # بخش آلمانی امتیاز نداره
+        if topic_k.startswith("de_"):
+            session["points_done"] = True
+            return
+        # شمارش پیام‌های کاربر در این session
+        user_turns = sum(1 for h in session.get("history", []) if h.get("role") == "user")
+        if user_turns < 2:
+            return  # تعامل کافی نبوده — امتیاز نده (ولی قفلش هم نکن)
+        if topic_k.startswith("conv_"):
+            pts, reason = 70, "conversation: " + topic_k
+        elif topic_k == "level_test":
+            pts, reason = 80, "level test"
+        elif "writing" in topic_k:
+            pts, reason = 60, "writing: " + topic_k
+        elif topic_k.startswith("vocab_") or "vocab" in topic_k:
+            pts, reason = 50, "vocabulary: " + topic_k
+        elif topic_k.startswith("grammar_") or "grammar" in topic_k:
+            pts, reason = 50, "grammar: " + topic_k
+        else:
+            pts, reason = 50, "ai session: " + topic_k
+        add_points(user_id, pts, reason)
+        session["points_done"] = True
+    except Exception as e:
+        print("award_ai_points error: " + str(e))
+
 def get_monthly_leaderboard():
     """رتبه‌بندی ماهانه — از اول ماه جاری"""
     try:
@@ -2507,6 +2542,13 @@ def get_ai_session(user_id):
     return ai_sessions[user_id]
 
 def clear_ai_session(user_id):
+    # اگه session فعالی با تعامل کافی هست، قبل از پاک کردن امتیازش رو ثبت کن
+    try:
+        sess = ai_sessions.get(user_id)
+        if sess and sess.get("active") and not sess.get("points_done"):
+            award_ai_points(user_id, sess)
+    except Exception as e:
+        print("clear_ai_session award error: " + str(e))
     ai_sessions[user_id] = {"history": [], "topic": None, "active": False}
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2944,6 +2986,7 @@ async def endai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session = get_ai_session(user_id)
     if session["active"]:
+        award_ai_points(user_id, session)
         clear_ai_session(user_id)
         await update.message.reply_text(
             "✅ AI session ended.\n\nSee you next time! 😊",
@@ -3802,17 +3845,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     level=next((w for w in ["A1","A2","B1","B2","C1"] if w in resp_text), None),
                     summary=resp_text[:200]
                 )
-                # امتیازدهی AI session (فقط Persian — غیر آلمانی)
-                topic_k = session.get("topic", "")
-                if not topic_k.startswith("de_"):
-                    if topic_k.startswith("conv_"):
-                        add_points(user_id, 70, "conversation: " + topic_k)
-                    elif topic_k == "level_test":
-                        add_points(user_id, 80, "level test")
-                    elif "writing" in topic_k:
-                        add_points(user_id, 60, "writing: " + topic_k)
-                    else:
-                        add_points(user_id, 50, "ai session: " + topic_k)
+                # امتیازدهی AI session (یک‌بار، با تشخیص خودکار پایان)
+                award_ai_points(user_id, session)
                 clear_ai_session(user_id)
                 await update.message.reply_text(
                     "🏠 منو اصلی:",
