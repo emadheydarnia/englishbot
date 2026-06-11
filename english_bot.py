@@ -2496,10 +2496,13 @@ all_scores = {}
 # ── Keyboards ─────────────────────────────────────────────────────────────────
 
 def main_menu_keyboard():
-    return InlineKeyboardMarkup([
+    rows = [
         [InlineKeyboardButton("Persian Students", callback_data="lang_persian")],
         [InlineKeyboardButton("German Students", callback_data="lang_german")],
-    ])
+    ]
+    if LEITNER_URL:
+        rows.append([InlineKeyboardButton("📦 Leitner Box", web_app=WebAppInfo(url=LEITNER_URL))])
+    return InlineKeyboardMarkup(rows)
 
 def persian_menu_keyboard():
     return InlineKeyboardMarkup([
@@ -4457,10 +4460,11 @@ from urllib.parse import parse_qsl
 # وضعیت بازی‌های فعال Mini App در حافظه — کلید: telegram_id
 M_API_GAMES = {}
 
-def m_verify_init_data(init_data, max_age=86400):
+def m_verify_init_data(init_data, max_age=0):
     """
     اعتبارسنجی initData تلگرام طبق مستندات رسمی.
     خروجی: dict اطلاعات کاربر اگه معتبر بود، وگرنه None.
+    max_age=0 یعنی بررسی انقضای زمانی غیرفعاله (جلوگیری از auth_failed بی‌مورد).
     """
     if not init_data or not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
         return None
@@ -4492,8 +4496,12 @@ def m_verify_init_data(init_data, max_age=86400):
 def m_api_user_from_request(data):
     """از بدنه‌ی request، کاربر احراز هویت‌شده رو برمی‌گردونه (یا None)."""
     init_data = data.get("initData", "")
+    if not init_data:
+        logger.warning("auth: initData is EMPTY (Mini App did not send it)")
+        return None
     user = m_verify_init_data(init_data)
     if not user:
+        logger.warning("auth: initData present but verification FAILED (len=" + str(len(init_data)) + ")")
         return None
     return user
 
@@ -5069,6 +5077,18 @@ async def reminders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def leitner_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """باز کردن جعبه لایتنر با دکمه‌ی inline (مطمئن‌ترین راه برای ارسال initData)."""
+    if not LEITNER_URL:
+        await update.message.reply_text("📦 Leitner Box is not configured yet (MINIAPP_URL missing).")
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📦 Open Leitner Box", web_app=WebAppInfo(url=LEITNER_URL))]])
+    await update.message.reply_text(
+        "📦 Your personal Leitner Box\n\nTap below to add and review your flashcards:",
+        reply_markup=kb
+    )
+
+
 def main():
     init_db()
     # پر کردن یک‌باره‌ی بانک سوالات اگه خالیه (در صورت تنظیم env)
@@ -5095,6 +5115,7 @@ def main():
     app.add_handler(CommandHandler("mqstats", mqstats_cmd))
     app.add_handler(CommandHandler("reminders", reminders_cmd))
     app.add_handler(CommandHandler("about", about_cmd))
+    app.add_handler(CommandHandler("leitner", leitner_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     # یادآوری روزانه‌ی جعبه لایتنر — ۱۱ صبح ایران = ۷:۳۰ UTC
