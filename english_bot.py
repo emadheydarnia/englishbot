@@ -4419,8 +4419,8 @@ async def api_answer(request):
         m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
                     money, g["correct_count"], False)
         pts = 0
-        if money >= 32000: pts = 60
-        elif money >= 1000: pts = 30
+        if money >= 32000: pts = 30
+        elif money >= 1000: pts = 15
         if pts > 0:
             add_points(uid, pts, "miniapp millionaire timeout L" + str(g["level_index"]+1))
         g["active"] = False
@@ -4440,7 +4440,7 @@ async def api_answer(request):
         if g["qindex"] >= MILLIONAIRE_TOTAL_Q - 1:
             m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
                         1000000, g["correct_count"], True)
-            pts = 100 + 50
+            pts = 100
             add_points(uid, pts, "miniapp millionaire win L" + str(g["level_index"]+1))
             g["active"] = False
             return web.json_response({
@@ -4473,8 +4473,8 @@ async def api_answer(request):
         m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
                     money, g["correct_count"], False)
         pts = 0
-        if money >= 32000: pts = 60
-        elif money >= 1000: pts = 30
+        if money >= 32000: pts = 30
+        elif money >= 1000: pts = 15
         if pts > 0:
             add_points(uid, pts, "miniapp millionaire lose L" + str(g["level_index"]+1))
         g["active"] = False
@@ -4508,8 +4508,8 @@ async def api_timeout(request):
     m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
                 money, g["correct_count"], False)
     pts = 0
-    if money >= 32000: pts = 60
-    elif money >= 1000: pts = 30
+    if money >= 32000: pts = 30
+    elif money >= 1000: pts = 15
     if pts > 0:
         add_points(uid, pts, "miniapp millionaire timeout L" + str(g["level_index"]+1))
     g["active"] = False
@@ -4631,9 +4631,9 @@ async def api_walk(request):
     m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
                 money, g["correct_count"], False)
     pts = 0
-    if money >= 32000: pts = 60
-    elif money >= 1000: pts = 30
-    elif money > 0: pts = 10
+    if money >= 32000: pts = 30
+    elif money >= 1000: pts = 15
+    elif money > 0: pts = 5
     if pts > 0:
         add_points(uid, pts, "miniapp millionaire walk L" + str(g["level_index"]+1))
     g["active"] = False
