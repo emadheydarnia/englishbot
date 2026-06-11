@@ -2455,12 +2455,11 @@ def get_state(context, user_id):
 def clear_state(context, user_id):
     context.bot_data["exam_" + str(user_id)] = {}
 
-# Models to try in order — powerful first, fast as fallback
+# Models to try in order — همه معتبر در ژوئن ۲۰۲۶ (مدل‌های 2.0 و 1.5 تعطیل شدن)
 GEMINI_MODELS = [
-    "gemini-2.5-flash-preview-05-20",  # جدیدترین
-    "gemini-2.5-flash",                 # پشتیبان
-    "gemini-2.0-flash",                 # fallback
-    "gemini-1.5-flash",                 # آخرین تلاش
+    "gemini-2.5-flash",        # اصلی — پایدار
+    "gemini-2.5-flash-lite",   # سبک‌تر و سریع‌تر (پشتیبان)
+    "gemini-flash-latest",     # همیشه جدیدترین Flash (آخرین تلاش)
 ]
 
 def call_gemini_api(history, new_message, model=None):
