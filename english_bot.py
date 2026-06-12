@@ -2496,13 +2496,10 @@ all_scores = {}
 # ── Keyboards ─────────────────────────────────────────────────────────────────
 
 def main_menu_keyboard():
-    rows = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton("Persian Students", callback_data="lang_persian")],
         [InlineKeyboardButton("German Students", callback_data="lang_german")],
-    ]
-    if LEITNER_URL:
-        rows.append([InlineKeyboardButton("📦 Leitner Box", web_app=WebAppInfo(url=LEITNER_URL))])
-    return InlineKeyboardMarkup(rows)
+    ])
 
 def persian_menu_keyboard():
     return InlineKeyboardMarkup([
@@ -2683,14 +2680,10 @@ def ai_end_keyboard():
 
 def main_reply_keyboard():
     """Reply keyboard — همیشه پایین صفحه"""
-    rows = [
+    return ReplyKeyboardMarkup([
         ["📊 My Score", "📈 My Progress"],
         ["🏆 Leaderboard", "🏠 Main Menu"],
-    ]
-    # دکمه‌ی جعبه لایتنر (Mini App) — فقط اگه آدرس تنظیم شده
-    if LEITNER_URL:
-        rows.append([KeyboardButton("📦 Leitner Box", web_app=WebAppInfo(url=LEITNER_URL))])
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=False)
+    ], resize_keyboard=True, one_time_keyboard=False)
 
 def ai_active_keyboard():
     return InlineKeyboardMarkup([
@@ -4885,6 +4878,13 @@ async def api_leitner_index(request):
         return web.FileResponse(path)
     return web.Response(text="Leitner Mini App file not found.", status=404)
 
+async def api_hub_index(request):
+    from aiohttp import web
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hub.html")
+    if os.path.exists(path):
+        return web.FileResponse(path)
+    return web.Response(text="Hub file not found.", status=404)
+
 async def api_leitner_add(request):
     from aiohttp import web
     data = await request.json()
@@ -5001,6 +5001,7 @@ async def start_web_server(app_ptb):
     web_app.router.add_get("/", api_index)
     web_app.router.add_get("/health", api_health)
     web_app.router.add_get("/leitner", api_leitner_index)
+    web_app.router.add_get("/hub", api_hub_index)
     web_app.router.add_post("/api/start", api_start)
     web_app.router.add_post("/api/answer", api_answer)
     web_app.router.add_post("/api/timeout", api_timeout)
@@ -5044,7 +5045,7 @@ async def daily_leitner_reminder(context: ContextTypes.DEFAULT_TYPE):
                     text=(
                         "📦 Leitner Box — Daily Reminder\n\n"
                         "📚 You have " + str(due) + " card(s) due for review today!\n"
-                        "Tap the 📦 Leitner Box button below to practice. 💪\n\n"
+                        "Open the menu (🎓) and tap Leitner Box to practice. 💪\n\n"
                         "— Emad English Lab"
                     )
                 )

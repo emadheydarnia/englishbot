@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Emad English Lab</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  *{ margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  :root{ --bg:#0e1726; --gold:#ffd84d; --accent:#4f8cff; --text:#eaf1ff; --dim:#9fb3d4; --line:#27395e; }
+  html,body{ height:100%; }
+  body{ font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--text);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:100vh; padding:24px; }
+  .wrap{ width:100%; max-width:380px; text-align:center; }
+  .logo{ font-size:24px; font-weight:700; color:var(--gold); margin-bottom:4px; }
+  .tag{ font-size:13px; color:var(--dim); margin-bottom:28px; }
+  .choice{
+    display:flex; align-items:center; gap:14px; width:100%; text-align:left;
+    background:linear-gradient(160deg,#1d2c49,#16223a); border:1px solid var(--line);
+    border-radius:16px; padding:18px; margin-bottom:14px; cursor:pointer; transition:transform .12s, border-color .2s;
+  }
+  .choice:active{ transform:scale(.98); }
+  .choice:hover{ border-color:var(--accent); }
+  .choice .ico{ font-size:34px; flex-shrink:0; }
+  .choice .txt .t{ font-size:17px; font-weight:600; }
+  .choice .txt .d{ font-size:12px; color:var(--dim); margin-top:3px; line-height:1.5; }
+  .brand{ margin-top:26px; padding-top:18px; border-top:1px solid var(--line); }
+  .brand-title{ font-size:13px; font-weight:700; color:var(--gold); margin-bottom:8px; }
+  .brand-link{ display:block; font-size:12px; color:#9ec3f5; text-decoration:none; padding:3px 0; }
+  .brand-link:active{ opacity:.6; }
+  .err{ color:#e25563; font-size:12.5px; margin-top:14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">🎓 Emad English Lab</div>
+  <div class="tag">Choose what you want to open</div>
+
+  <div class="choice" id="c-leitner">
+    <div class="ico">📦</div>
+    <div class="txt"><div class="t">Leitner Box</div><div class="d">Your personal flashcards — add & review vocabulary with spaced repetition</div></div>
+  </div>
+
+  <div class="choice" id="c-millionaire">
+    <div class="ico">🎬</div>
+    <div class="txt"><div class="t">Millionaire Game</div><div class="d">Test your English grammar and climb to €1,000,000</div></div>
+  </div>
+
+  <div class="err" id="err"></div>
+
+  <div class="brand">
+    <div class="brand-title">Emad English Lab</div>
+    <a class="brand-link" href="https://t.me/emadenglishlab" target="_blank">📢 Channel: @emadenglishlab</a>
+    <a class="brand-link" href="https://t.me/emadenglishbot" target="_blank">🤖 Bot: @emadenglishbot</a>
+    <a class="brand-link" href="https://instagram.com/emadheydarnia" target="_blank">📸 Instagram: @emadheydarnia</a>
+  </div>
+</div>
+
+<script>
+const tg = window.Telegram ? window.Telegram.WebApp : null;
+if(tg){ tg.ready(); tg.expand(); }
+
+// مسیرها نسبت به همین صفحه (همون origin) ساخته می‌شن تا initData حفظ بشه
+const base = location.origin;
+
+document.getElementById('c-leitner').onclick = ()=>{ location.href = base + '/leitner'; };
+document.getElementById('c-millionaire').onclick = ()=>{ location.href = base + '/'; };
+</script>
+</body>
+</html>
