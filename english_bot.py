@@ -141,6 +141,16 @@ def init_db():
             )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_leitner_user ON leitner_cards(telegram_id, due_date)")
+        # ── عکس روزانه‌ی لیدربورد برای گزارش طنز (مقایسه‌ی رتبه‌ها) ──
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS leaderboard_snapshot (
+                telegram_id BIGINT PRIMARY KEY,
+                name VARCHAR(100),
+                rank INTEGER,
+                points INTEGER,
+                taken_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         print("DB init error: " + str(e))
@@ -322,7 +332,7 @@ def get_monthly_leaderboard():
             GROUP BY u.telegram_id, u.name, u.student_class
             HAVING COALESCE(SUM(p.points),0) > 0
             ORDER BY total_points DESC
-            LIMIT 20
+            LIMIT 100
         """)
         rows = cur.fetchall(); cur.close(); conn.close()
         return rows
@@ -3149,20 +3159,35 @@ async def leaderboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user_id = update.effective_user.id
     medals = ["\U0001f947","\U0001f948","\U0001f949"]
-    msg = f"\U0001f3c6 جدول رتبه\u200cبندی ماه {month_name}\n"
-    msg += "\u2501"*22 + "\n\n"
+    header = f"\U0001f3c6 جدول رتبه\u200cبندی ماه {month_name}\n" + "\u2501"*22 + "\n\n"
+    footer = ("\n" + "\u2501"*22 + "\n"
+              "\U0001f381 جایزه نفر اول: ۱,۰۰۰,۰۰۰ تومان تخفیف\n"
+              "\U0001f381 جایزه نفر دوم: ۵۰۰,۰۰۰ تومان تخفیف\n"
+              "\n\u23f3 رتبه\u200cبندی اول هر ماه ریست می\u200cشه")
+    lines = []
     for i, r in enumerate(rows):
-        if i < 3:
-            rank = medals[i]
-        else:
-            rank = f"{i+1}."
+        rank = medals[i] if i < 3 else f"{i+1}."
         me = " \U0001f449 تو" if r["telegram_id"] == user_id else ""
-        msg += f"{rank} {r['name']} — {r['total_points']} pts{me}\n"
-    msg += "\n" + "\u2501"*22 + "\n"
-    msg += "\U0001f381 جایزه نفر اول: ۱,۰۰۰,۰۰۰ تومان تخفیف\n"
-    msg += "\U0001f381 جایزه نفر دوم: ۵۰۰,۰۰۰ تومان تخفیف\n"
-    msg += "\n\u23f3 رتبه\u200cبندی اول هر ماه ریست می\u200cشه"
-    await update.message.reply_text(msg)
+        lines.append(f"{rank} {r['name']} — {r['total_points']} pts{me}")
+    # تقسیم به چند پیام اگه طولانی شد (محدودیت ۴۰۹۶ کاراکتر تلگرام)
+    chunks = []
+    cur_chunk = ""
+    for line in lines:
+        if len(cur_chunk) + len(line) + 1 > 3500:
+            chunks.append(cur_chunk)
+            cur_chunk = ""
+        cur_chunk += line + "\n"
+    if cur_chunk:
+        chunks.append(cur_chunk)
+    total = len(chunks)
+    for idx, chunk in enumerate(chunks):
+        text = ""
+        if idx == 0:
+            text += header
+        text += chunk
+        if idx == total - 1:
+            text += footer
+        await update.message.reply_text(text)
 
 async def users_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != TEACHER_ID:
@@ -5029,6 +5054,123 @@ async def _on_post_init(application):
     await start_web_server(application)
 
 
+def lb_save_snapshot(rows):
+    """عکس فعلی لیدربورد رو ذخیره می‌کنه (برای مقایسه‌ی فردا)."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM leaderboard_snapshot")
+        for i, r in enumerate(rows):
+            cur.execute(
+                "INSERT INTO leaderboard_snapshot (telegram_id, name, rank, points) VALUES (%s,%s,%s,%s)",
+                (r["telegram_id"], r["name"], i + 1, r["total_points"])
+            )
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        print("lb_save_snapshot error: " + str(e))
+
+def lb_get_snapshot():
+    """عکس قبلی لیدربورد. خروجی: dict[telegram_id] = {rank, points}"""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT telegram_id, rank, points FROM leaderboard_snapshot")
+        out = {r["telegram_id"]: {"rank": r["rank"], "points": r["points"]} for r in cur.fetchall()}
+        cur.close(); conn.close()
+        return out
+    except Exception as e:
+        print("lb_get_snapshot error: " + str(e))
+        return {}
+
+def lb_build_movements(rows, prev):
+    """تغییرات رتبه‌ی امروز نسبت به دیروز رو به متن خلاصه می‌کنه (برای دادن به Gemini)."""
+    lines = []
+    for i, r in enumerate(rows[:20]):
+        uid = r["telegram_id"]
+        new_rank = i + 1
+        name = r["name"]
+        pts = r["total_points"]
+        if uid in prev:
+            old_rank = prev[uid]["rank"]
+            old_pts = prev[uid]["points"]
+            delta_pts = pts - old_pts
+            if old_rank > new_rank:
+                lines.append(f"{name}: از رتبه {old_rank} به رتبه {new_rank} صعود کرد (+{delta_pts} امتیاز امروز)")
+            elif old_rank < new_rank:
+                lines.append(f"{name}: از رتبه {old_rank} به رتبه {new_rank} سقوط کرد")
+            else:
+                if delta_pts > 0:
+                    lines.append(f"{name}: رتبه {new_rank} رو حفظ کرد (+{delta_pts} امتیاز امروز)")
+                else:
+                    lines.append(f"{name}: رتبه {new_rank}، امروز امتیازی نگرفت")
+        else:
+            lines.append(f"{name}: تازه‌وارد جدول در رتبه {new_rank} ({pts} امتیاز)")
+    return "\n".join(lines)
+
+async def daily_leaderboard_report(context: ContextTypes.DEFAULT_TYPE):
+    """هر روز ساعت ۸ شب ایران: گزارش طنز روزانه‌ی جدول لیدربورد."""
+    try:
+        rows = get_monthly_leaderboard()
+        if not rows:
+            return
+        prev = lb_get_snapshot()
+        movements = lb_build_movements(rows, prev)
+
+        # اگه عکس قبلی نبود (اولین بار)، فقط صدرنشین‌ها رو معرفی کن
+        first_time = (len(prev) == 0)
+
+        prompt = (
+            "تو یه گزارشگر ورزشی فارسی‌زبان و بامزه‌ای که جدول امتیازات یه آکادمی زبان انگلیسی رو روایت می‌کنی.\n"
+            "بر اساس تغییرات امروزِ جدول، یه «گزارش روز» کوتاه و هیجان‌انگیز و طنز بنویس (حداکثر ۸ خط).\n\n"
+            "قوانین مهم:\n"
+            "- لحن طنز و هیجان‌انگیز مثل گزارشگر مسابقه، ولی بدون تخریب یا تحقیر کسی.\n"
+            "- زیادی چاپلوسی و مثبت‌گویی نکن، لوس نشو. واقعی و بامزه باش.\n"
+            "- روی سبقت‌ها و جابه‌جایی‌های جالب تمرکز کن (کی از کی جلو زد).\n"
+            "- اسم‌ها رو دقیق همون‌طور که هست بنویس.\n"
+            "- با ایموجی‌های مناسب جون بده ولی زیادی شلوغش نکن.\n"
+            "- آخرش یه جمله‌ی کوتاه انگیزشی/چالشی برای فردا.\n\n"
+            "تغییرات امروز جدول:\n" + movements
+        )
+        if first_time:
+            prompt += "\n\n(توجه: این اولین گزارشه و داده‌ی دیروز نداریم، پس فقط صدر جدول و وضعیت فعلی رو بامزه معرفی کن.)"
+
+        loop = asyncio.get_event_loop()
+        try:
+            narration = await loop.run_in_executor(None, lambda: call_gemini_api([], prompt))
+        except Exception as e:
+            logger.error("report gemini failed: " + str(e))
+            narration = None
+
+        if not narration:
+            # اگه Gemini در دسترس نبود، یه گزارش ساده بفرست
+            narration = "📊 گزارش امروز آماده نشد، ولی رقابت داغه! فردا برمی‌گردیم. 🔥"
+
+        msg = "🎙️ گزارش روزِ جدول لیدربورد\n" + "━" * 20 + "\n\n" + narration.strip()
+
+        # مقصد: REPORT_CHAT_ID اگه تنظیم شده، وگرنه همه‌ی کاربرها
+        target = os.environ.get("REPORT_CHAT_ID", "").strip()
+        if target:
+            try:
+                await context.bot.send_message(chat_id=target, text=msg)
+            except Exception as e:
+                logger.error("report send to channel failed: " + str(e))
+        else:
+            # به همه‌ی کاربرهای فعال بفرست
+            sent = 0
+            for r in rows:
+                try:
+                    await context.bot.send_message(chat_id=r["telegram_id"], text=msg)
+                    sent += 1
+                except Exception:
+                    pass
+                await asyncio.sleep(0.1)
+            logger.info("Daily report sent to " + str(sent) + " users")
+
+        # عکس امروز رو برای مقایسه‌ی فردا ذخیره کن
+        lb_save_snapshot(rows)
+    except Exception as e:
+        logger.error("daily_leaderboard_report error: " + str(e))
+
 async def daily_leitner_reminder(context: ContextTypes.DEFAULT_TYPE):
     """هر روز ساعت ۱۱ صبح ایران (۷:۳۰ UTC) به کاربرانی که کارت موعد‌رسیده دارن یادآوری می‌فرسته."""
     try:
@@ -5078,6 +5220,33 @@ async def reminders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def testreport_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """تست فوری گزارش روزانه — فقط معلم."""
+    if update.effective_user.id != TEACHER_ID:
+        await update.message.reply_text("🚫 Teacher only.")
+        return
+    await update.message.reply_text("🎙️ در حال ساخت گزارش تستی... (فقط برای تو فرستاده می‌شه)")
+    try:
+        rows = get_monthly_leaderboard()
+        if not rows:
+            await update.message.reply_text("جدول خالیه، گزارشی نیست.")
+            return
+        prev = lb_get_snapshot()
+        movements = lb_build_movements(rows, prev)
+        prompt = (
+            "تو یه گزارشگر ورزشی فارسی‌زبان و بامزه‌ای که جدول امتیازات یه آکادمی زبان انگلیسی رو روایت می‌کنی.\n"
+            "بر اساس تغییرات امروزِ جدول، یه «گزارش روز» کوتاه و هیجان‌انگیز و طنز بنویس (حداکثر ۸ خط).\n"
+            "لحن طنز بدون تخریب، لوس و چاپلوس نباش، روی سبقت‌ها تمرکز کن، اسم‌ها رو دقیق بنویس، آخرش یه جمله‌ی چالشی برای فردا.\n\n"
+            "تغییرات امروز جدول:\n" + movements
+        )
+        loop = asyncio.get_event_loop()
+        narration = await loop.run_in_executor(None, lambda: call_gemini_api([], prompt))
+        msg = "🎙️ گزارش روزِ جدول لیدربورد (تست)\n" + "━" * 20 + "\n\n" + (narration or "خطا").strip()
+        await update.message.reply_text(msg)
+    except Exception as e:
+        await update.message.reply_text("خطا در ساخت گزارش: " + str(e))
+
+
 async def leitner_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """باز کردن جعبه لایتنر با دکمه‌ی inline (مطمئن‌ترین راه برای ارسال initData)."""
     if not LEITNER_URL:
@@ -5117,6 +5286,7 @@ def main():
     app.add_handler(CommandHandler("reminders", reminders_cmd))
     app.add_handler(CommandHandler("about", about_cmd))
     app.add_handler(CommandHandler("leitner", leitner_cmd))
+    app.add_handler(CommandHandler("testreport", testreport_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     # یادآوری روزانه‌ی جعبه لایتنر — ۱۱ صبح ایران = ۷:۳۰ UTC
@@ -5129,6 +5299,16 @@ def main():
         logger.info("Daily Leitner reminder scheduled for 07:30 UTC (11:00 Iran).")
     except Exception as e:
         logger.error("Could not schedule daily reminder: " + str(e))
+    # گزارش طنز روزانه‌ی لیدربورد — ۸ شب ایران = ۱۶:۳۰ UTC
+    try:
+        app.job_queue.run_daily(
+            daily_leaderboard_report,
+            time=dtime(hour=16, minute=30, tzinfo=timezone.utc),
+            name="daily_leaderboard_report",
+        )
+        logger.info("Daily leaderboard report scheduled for 16:30 UTC (20:00 Iran).")
+    except Exception as e:
+        logger.error("Could not schedule daily report: " + str(e))
     logger.info("Bot is running...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
