@@ -3273,10 +3273,11 @@ async def leaderboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
               "\U0001f381 جایزه نفر دوم: ۵۰۰,۰۰۰ تومان تخفیف\n"
               "\n\u23f3 رتبه\u200cبندی اول هر ماه ریست می\u200cشه")
     lines = []
+    LRM = "\u200e"  # Left-to-Right Mark — ساختار «رتبه ... pts» رو ثابت نگه می‌داره
     for i, r in enumerate(rows):
         rank = medals[i] if i < 3 else f"{i+1}."
         me = " \U0001f449 تو" if r["telegram_id"] == user_id else ""
-        lines.append(f"{rank} {r['name']} — {r['total_points']} pts{me}")
+        lines.append(LRM + f"{rank} {r['name']} — {r['total_points']} pts{me}")
     # تقسیم به چند پیام اگه طولانی شد (محدودیت ۴۰۹۶ کاراکتر تلگرام)
     chunks = []
     cur_chunk = ""
