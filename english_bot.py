@@ -151,6 +151,19 @@ def init_db():
                 taken_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        # ── تالار افتخارات: قهرمان و نایب‌قهرمان هر ماه (دائمی) ──
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS hall_of_fame (
+                id SERIAL PRIMARY KEY,
+                period VARCHAR(7),
+                rank INTEGER,
+                telegram_id BIGINT,
+                name VARCHAR(100),
+                points INTEGER,
+                recorded_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(period, rank)
+            )
+        """)
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         print("DB init error: " + str(e))
@@ -339,6 +352,82 @@ def get_monthly_leaderboard():
     except Exception as e:
         print("leaderboard error: " + str(e))
         return []
+
+def get_month_top2(year, month):
+    """نفر اول و دوم یه ماه مشخص (برای ثبت در تالار افتخارات)."""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT u.name, u.telegram_id, COALESCE(SUM(p.points),0) as total_points
+            FROM users u
+            LEFT JOIN points_log p ON u.telegram_id = p.telegram_id
+                AND date_trunc('month', p.created_at) = make_date(%s, %s, 1)
+            GROUP BY u.telegram_id, u.name
+            HAVING COALESCE(SUM(p.points),0) > 0
+            ORDER BY total_points DESC
+            LIMIT 2
+        """, (year, month))
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return rows
+    except Exception as e:
+        print("get_month_top2 error: " + str(e))
+        return []
+
+def record_hall_of_fame_if_needed():
+    """
+    اگه قهرمان‌های ماه‌های گذشته هنوز ثبت نشدن، ثبتشون می‌کنه.
+    این تابع هر بار که لیدربورد نشون داده می‌شه صدا زده می‌شه (ارزونه).
+    فقط ماه‌های تموم‌شده رو ثبت می‌کنه، نه ماه جاری.
+    """
+    try:
+        from datetime import date
+        today = date.today()
+        # ماه قبل
+        if today.month == 1:
+            py, pm = today.year - 1, 12
+        else:
+            py, pm = today.year, today.month - 1
+        period = f"{py:04d}-{pm:02d}"
+
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM hall_of_fame WHERE period=%s", (period,))
+        already = cur.fetchone()[0]
+        cur.close(); conn.close()
+        if already:
+            return  # ماه قبل از قبل ثبت شده
+
+        top2 = get_month_top2(py, pm)
+        if not top2:
+            return  # ماه قبل کسی امتیاز نداشته
+
+        conn = get_db()
+        cur = conn.cursor()
+        for i, r in enumerate(top2):
+            cur.execute("""
+                INSERT INTO hall_of_fame (period, rank, telegram_id, name, points)
+                VALUES (%s,%s,%s,%s,%s)
+                ON CONFLICT (period, rank) DO NOTHING
+            """, (period, i + 1, r["telegram_id"], r["name"], r["total_points"]))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        print("record_hall_of_fame_if_needed error: " + str(e))
+
+def get_hall_of_fame():
+    """تاریخچه‌ی قهرمان‌ها: dict[period] = {1: {...}, 2: {...}}، جدیدترین اول."""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT period, rank, name, points FROM hall_of_fame ORDER BY period DESC, rank ASC")
+        rows = cur.fetchall(); cur.close(); conn.close()
+        out = {}
+        for r in rows:
+            out.setdefault(r["period"], {})[r["rank"]] = {"name": r["name"], "points": r["points"]}
+        return out
+    except Exception as e:
+        print("get_hall_of_fame error: " + str(e))
+        return {}
 
 def get_my_points(telegram_id):
     """امتیاز ماهانه یه کاربر"""
@@ -3149,6 +3238,7 @@ async def feedback_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def leaderboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    record_hall_of_fame_if_needed()
     rows = get_monthly_leaderboard()
     import calendar
     month_name = calendar.month_name[datetime.now().month]
@@ -3159,7 +3249,25 @@ async def leaderboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user_id = update.effective_user.id
     medals = ["\U0001f947","\U0001f948","\U0001f949"]
-    header = f"\U0001f3c6 جدول رتبه\u200cبندی ماه {month_name}\n" + "\u2501"*22 + "\n\n"
+
+    # ── تالار افتخارات: قهرمان‌های ماه‌های قبل ──
+    hof = get_hall_of_fame()
+    hof_text = ""
+    if hof:
+        hof_text = "\U0001f3c5 تالار افتخارات\n" + "\u2501"*22 + "\n"
+        for period in list(hof.keys())[:12]:  # حداکثر ۱۲ ماه اخیر
+            champs = hof[period]
+            first = champs.get(1)
+            second = champs.get(2)
+            line = "\U0001f4c5 " + period + ": "
+            if first:
+                line += "\U0001f947 " + first["name"]
+            if second:
+                line += "  \U0001f948 " + second["name"]
+            hof_text += line + "\n"
+        hof_text += "\n"
+
+    header = hof_text + f"\U0001f3c6 جدول رتبه\u200cبندی ماه {month_name}\n" + "\u2501"*22 + "\n\n"
     footer = ("\n" + "\u2501"*22 + "\n"
               "\U0001f381 جایزه نفر اول: ۱,۰۰۰,۰۰۰ تومان تخفیف\n"
               "\U0001f381 جایزه نفر دوم: ۵۰۰,۰۰۰ تومان تخفیف\n"
@@ -5054,6 +5162,35 @@ async def _on_post_init(application):
     await start_web_server(application)
 
 
+def fix_rtl(text):
+    """
+    متن فارسیِ مخلوط با انگلیسی/عدد رو درست راست‌چین می‌کنه.
+    اول هر خط یه RLM (علامت راست‌چین نامرئی) می‌ذاره تا خط فارسی بمونه
+    حتی وقتی با اسم انگلیسی یا عدد شروع می‌شه.
+    """
+    RLM = "\u200f"  # Right-to-Left Mark
+    if not text:
+        return text
+    out_lines = []
+    for line in text.split("\n"):
+        if line.strip():
+            out_lines.append(RLM + line)
+        else:
+            out_lines.append(line)
+    return "\n".join(out_lines)
+
+def m_looks_truncated(text):
+    """تشخیص می‌ده که آیا متن وسط جمله بریده شده (ناقص). برای retry گزارش."""
+    if not text:
+        return True
+    t = text.strip()
+    if len(t) < 25:
+        return True
+    # اگه با علامت پایان جمله تموم نشده باشه، احتمالاً ناقصه
+    if t[-1] not in "!.؟?…\"'»):":
+        return True
+    return False
+
 def lb_save_snapshot(rows):
     """عکس فعلی لیدربورد رو ذخیره می‌کنه (برای مقایسه‌ی فردا)."""
     try:
@@ -5121,31 +5258,37 @@ async def daily_leaderboard_report(context: ContextTypes.DEFAULT_TYPE):
 
         prompt = (
             "تو یه گزارشگر ورزشی فارسی‌زبان و بامزه‌ای که جدول امتیازات یه آکادمی زبان انگلیسی رو روایت می‌کنی.\n"
-            "بر اساس تغییرات امروزِ جدول، یه «گزارش روز» کوتاه و هیجان‌انگیز و طنز بنویس (حداکثر ۸ خط).\n\n"
+            "بر اساس تغییرات امروزِ جدول، یه «گزارش روز» کوتاه و هیجان‌انگیز و طنز بنویس (بین ۴ تا ۸ خط).\n\n"
             "قوانین مهم:\n"
             "- لحن طنز و هیجان‌انگیز مثل گزارشگر مسابقه، ولی بدون تخریب یا تحقیر کسی.\n"
             "- زیادی چاپلوسی و مثبت‌گویی نکن، لوس نشو. واقعی و بامزه باش.\n"
             "- روی سبقت‌ها و جابه‌جایی‌های جالب تمرکز کن (کی از کی جلو زد).\n"
             "- اسم‌ها رو دقیق همون‌طور که هست بنویس.\n"
             "- با ایموجی‌های مناسب جون بده ولی زیادی شلوغش نکن.\n"
-            "- آخرش یه جمله‌ی کوتاه انگیزشی/چالشی برای فردا.\n\n"
+            "- خیلی مهم: گزارش باید کامل باشه و وسط جمله قطع نشه. حتماً با یه جمله‌ی کوتاهِ کاملِ انگیزشی/چالشی برای فردا تمومش کن.\n"
+            "- جمله‌ی ناتمام ننویس.\n\n"
             "تغییرات امروز جدول:\n" + movements
         )
         if first_time:
             prompt += "\n\n(توجه: این اولین گزارشه و داده‌ی دیروز نداریم، پس فقط صدر جدول و وضعیت فعلی رو بامزه معرفی کن.)"
 
         loop = asyncio.get_event_loop()
-        try:
-            narration = await loop.run_in_executor(None, lambda: call_gemini_api([], prompt))
-        except Exception as e:
-            logger.error("report gemini failed: " + str(e))
-            narration = None
+        narration = None
+        for attempt in range(2):  # حداکثر ۲ بار تلاش اگه ناقص اومد
+            try:
+                narration = await loop.run_in_executor(None, lambda: call_gemini_api([], prompt))
+            except Exception as e:
+                logger.error("report gemini failed: " + str(e))
+                narration = None
+            if narration and not m_looks_truncated(narration):
+                break
+            logger.warning("report looked truncated, retrying...")
 
         if not narration:
             # اگه Gemini در دسترس نبود، یه گزارش ساده بفرست
             narration = "📊 گزارش امروز آماده نشد، ولی رقابت داغه! فردا برمی‌گردیم. 🔥"
 
-        msg = "🎙️ گزارش روزِ جدول لیدربورد\n" + "━" * 20 + "\n\n" + narration.strip()
+        msg = "🎙️ گزارش روزِ جدول لیدربورد\n" + "━" * 20 + "\n\n" + fix_rtl(narration.strip())
 
         # مقصد: REPORT_CHAT_ID اگه تنظیم شده، وگرنه همه‌ی کاربرها
         target = os.environ.get("REPORT_CHAT_ID", "").strip()
@@ -5240,8 +5383,12 @@ async def testreport_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "تغییرات امروز جدول:\n" + movements
         )
         loop = asyncio.get_event_loop()
-        narration = await loop.run_in_executor(None, lambda: call_gemini_api([], prompt))
-        msg = "🎙️ گزارش روزِ جدول لیدربورد (تست)\n" + "━" * 20 + "\n\n" + (narration or "خطا").strip()
+        narration = None
+        for attempt in range(2):
+            narration = await loop.run_in_executor(None, lambda: call_gemini_api([], prompt))
+            if narration and not m_looks_truncated(narration):
+                break
+        msg = "🎙️ گزارش روزِ جدول لیدربورد (تست)\n" + "━" * 20 + "\n\n" + fix_rtl((narration or "خطا").strip())
         await update.message.reply_text(msg)
     except Exception as e:
         await update.message.reply_text("خطا در ساخت گزارش: " + str(e))
