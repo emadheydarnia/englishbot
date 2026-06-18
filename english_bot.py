@@ -4578,12 +4578,13 @@ def td_bootstrap_bank(max_seconds=0):
         have = cur.fetchone()[0]; cur.close()
         need = TD_TARGET_PER_LEVEL - have
         attempts = 0
-        while need > 0 and attempts < 40:
+        consecutive_fails = 0
+        while need > 0 and attempts < 120:
             if max_seconds and (_t.time() - start) > max_seconds:
                 logger.warning("td bootstrap: time budget reached.")
                 conn.close(); return
             attempts += 1
-            ask = min(10, need + 2)
+            ask = min(8, need + 2)
             prompt = (
                 "You are creating content for a Persian-to-English translation game.\n"
                 "CEFR level: " + lv + " — " + level_desc[lv] + "\n\n"
@@ -4596,13 +4597,20 @@ def td_bootstrap_bank(max_seconds=0):
                 "- Output ONLY a JSON array, no extra text. Each item: "
                 '{"fa": "جمله فارسی", "en": "English reference translation"}\n'
             )
+            resp = None
             try:
                 resp = call_gemini_api([], prompt)
             except Exception as e:
-                logger.error("td bootstrap gemini error: " + str(e))
-                break
+                logger.error("td bootstrap gemini error (continuing): " + str(e))
+                resp = None
             if not resp:
+                consecutive_fails += 1
+                if consecutive_fails >= 8:
+                    logger.warning("td bootstrap: too many fails on %s, moving on." % lv)
+                    break
+                _t.sleep(2)
                 continue
+            consecutive_fails = 0
             # استخراج JSON
             txt = resp.strip()
             if "```" in txt:
