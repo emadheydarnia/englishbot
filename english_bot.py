@@ -164,6 +164,48 @@ def init_db():
                 UNIQUE(period, rank)
             )
         """)
+        # ── Translation Duel: بانک سوال (جمله‌های فارسی + ترجمه‌ی مرجع) ──
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS td_questions (
+                id SERIAL PRIMARY KEY,
+                level VARCHAR(2),
+                fa TEXT,
+                en_ref TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_td_level ON td_questions(level)")
+        # ── Translation Duel: بازی‌ها ──
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS td_matches (
+                id SERIAL PRIMARY KEY,
+                creator_id BIGINT,
+                creator_name VARCHAR(100),
+                opponent_id BIGINT,
+                opponent_name VARCHAR(100),
+                question_ids TEXT,
+                creator_score INTEGER,
+                opponent_score INTEGER,
+                creator_answers TEXT,
+                opponent_answers TEXT,
+                status VARCHAR(20) DEFAULT 'open',
+                winner_id BIGINT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                finished_at TIMESTAMP
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_td_status ON td_matches(status)")
+        # ── Translation Duel: آمار برد/باخت هر بازیکن (لیدربورد داخلی) ──
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS td_stats (
+                telegram_id BIGINT PRIMARY KEY,
+                name VARCHAR(100),
+                wins INTEGER DEFAULT 0,
+                draws INTEGER DEFAULT 0,
+                losses INTEGER DEFAULT 0,
+                td_points INTEGER DEFAULT 0
+            )
+        """)
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         print("DB init error: " + str(e))
@@ -4442,6 +4484,152 @@ def m_bank_count_by_level():
         print("m_bank_count error: " + str(e))
         return {}
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ── TRANSLATION DUEL — Question Bank ──────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ساختار هر مسابقه: ۱۲ جمله به این ترتیب سطح‌بندی
+TD_STRUCTURE = ["A1", "A2", "A2", "A2", "B1", "B1", "B2", "B2", "C1", "C1", "C2", "C2"]
+TD_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
+TD_TARGET_PER_LEVEL = 200
+
+def td_bank_count_by_level():
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT level, COUNT(*) FROM td_questions GROUP BY level")
+        out = {lv: 0 for lv in TD_LEVELS}
+        for lv, c in cur.fetchall():
+            out[lv] = c
+        cur.close(); conn.close()
+        return out
+    except Exception as e:
+        print("td_bank_count error: " + str(e))
+        return {lv: 0 for lv in TD_LEVELS}
+
+def td_pick_questions():
+    """۱۲ سوال بر اساس TD_STRUCTURE انتخاب می‌کنه (تصادفی از هر سطح). خروجی: لیست rowها."""
+    import random as _r
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        picked = []
+        for lv in TD_STRUCTURE:
+            cur.execute(
+                "SELECT id, level, fa, en_ref FROM td_questions WHERE level=%s ORDER BY RANDOM() LIMIT 1",
+                (lv,)
+            )
+            row = cur.fetchone()
+            if row:
+                picked.append(dict(row))
+        cur.close(); conn.close()
+        return picked
+    except Exception as e:
+        print("td_pick_questions error: " + str(e))
+        return []
+
+def td_get_questions_by_ids(ids):
+    """سوال‌ها رو با ترتیب دقیق idها برمی‌گردونه (برای نفر دوم که همون سوال‌ها رو بگیره)."""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, level, fa, en_ref FROM td_questions WHERE id = ANY(%s)", (ids,))
+        by_id = {r["id"]: dict(r) for r in cur.fetchall()}
+        cur.close(); conn.close()
+        return [by_id[i] for i in ids if i in by_id]
+    except Exception as e:
+        print("td_get_questions_by_ids error: " + str(e))
+        return []
+
+def td_bootstrap_bank(max_seconds=0):
+    """
+    یک‌بار بانک ۱۲۰۰ جمله‌ای (۶ سطح × ۲۰۰) رو با AI می‌سازه.
+    blocking است و موقع startup صدا زده می‌شه (با متغیر TD_BOOTSTRAP=true).
+    """
+    import time as _t, json as _json
+    start = _t.time()
+    counts = td_bank_count_by_level()
+    total_now = sum(counts.values())
+    if total_now >= TD_TARGET_PER_LEVEL * len(TD_LEVELS):
+        logger.info("TD bank already full (%d). Skipping." % total_now)
+        return
+    logger.info("TD bank bootstrap starting (have %d)..." % total_now)
+
+    try:
+        conn = get_db()
+    except Exception as e:
+        logger.error("td bootstrap: DB connect failed: " + str(e))
+        return
+
+    level_desc = {
+        "A1": "very basic everyday sentences (greetings, simple present, basic nouns)",
+        "A2": "simple past/future, daily routines, simple connectors",
+        "B1": "opinions, experiences, common phrasal verbs, moderate complexity",
+        "B2": "abstract topics, passive voice, conditionals, richer vocabulary",
+        "C1": "complex ideas, nuanced expressions, advanced structures",
+        "C2": "idiomatic, sophisticated, near-native complexity",
+    }
+
+    for lv in TD_LEVELS:
+        cur = conn.cursor()
+        cur.execute("SELECT LOWER(fa) FROM td_questions WHERE level=%s", (lv,))
+        seen = set(r[0] for r in cur.fetchall())
+        cur.execute("SELECT COUNT(*) FROM td_questions WHERE level=%s", (lv,))
+        have = cur.fetchone()[0]; cur.close()
+        need = TD_TARGET_PER_LEVEL - have
+        attempts = 0
+        while need > 0 and attempts < 40:
+            if max_seconds and (_t.time() - start) > max_seconds:
+                logger.warning("td bootstrap: time budget reached.")
+                conn.close(); return
+            attempts += 1
+            ask = min(10, need + 2)
+            prompt = (
+                "You are creating content for a Persian-to-English translation game.\n"
+                "CEFR level: " + lv + " — " + level_desc[lv] + "\n\n"
+                "Generate " + str(ask) + " DISTINCT Persian sentences appropriate for this level, "
+                "each with a correct, natural English reference translation.\n"
+                "Rules:\n"
+                "- The Persian sentence is what the student sees and must translate to English.\n"
+                "- Keep sentences level-appropriate (A1 easiest, C2 hardest).\n"
+                "- Natural, real-life sentences. Avoid duplicates.\n"
+                "- Output ONLY a JSON array, no extra text. Each item: "
+                '{"fa": "جمله فارسی", "en": "English reference translation"}\n'
+            )
+            try:
+                resp = call_gemini_api([], prompt)
+            except Exception as e:
+                logger.error("td bootstrap gemini error: " + str(e))
+                break
+            if not resp:
+                continue
+            # استخراج JSON
+            txt = resp.strip()
+            if "```" in txt:
+                txt = txt.split("```")[1] if txt.count("```") >= 2 else txt
+                txt = txt.replace("json", "", 1).strip() if txt.lower().startswith("json") else txt
+            try:
+                s = txt.find("["); e = txt.rfind("]")
+                items = _json.loads(txt[s:e+1]) if s >= 0 and e > s else []
+            except Exception:
+                items = []
+            cur = conn.cursor()
+            added = 0
+            for it in items:
+                fa = str(it.get("fa", "")).strip()
+                en = str(it.get("en", "")).strip()
+                if not fa or not en or fa.lower() in seen:
+                    continue
+                seen.add(fa.lower())
+                cur.execute("INSERT INTO td_questions (level, fa, en_ref) VALUES (%s,%s,%s)", (lv, fa, en))
+                added += 1
+                need -= 1
+            conn.commit(); cur.close()
+            logger.info("TD %s: +%d (need %d more)" % (lv, added, max(0, need)))
+            _t.sleep(1.5)
+    conn.close()
+    logger.info("TD bank bootstrap finished.")
+
 def m_bootstrap_bank(target_per_level=100, max_seconds=0):
     """
     اگه بانک سوالات خالی/ناقصه، یک بار پُرش می‌کنه. این تابع blocking است و
@@ -5364,6 +5552,74 @@ async def reminders_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def tdstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """وضعیت بانک سوال Translation Duel — فقط معلم."""
+    if update.effective_user.id != TEACHER_ID:
+        await update.message.reply_text("🚫 Teacher only.")
+        return
+    counts = td_bank_count_by_level()
+    total = sum(counts.values())
+    lines = ["📊 Translation Duel — بانک سوال", "━" * 20]
+    for lv in TD_LEVELS:
+        have = counts.get(lv, 0)
+        mark = "✅" if have >= TD_TARGET_PER_LEVEL else "🟡"
+        lines.append(f"{mark} {lv}: {have}/{TD_TARGET_PER_LEVEL}")
+    lines.append("━" * 20)
+    lines.append(f"مجموع: {total}/{TD_TARGET_PER_LEVEL * len(TD_LEVELS)}")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def champion_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    معلم عکس کارت قهرمان رو با کپشن /champion می‌فرسته.
+    بات اون رو برای همه‌ی کاربرها + کانال (اگه REPORT_CHAT_ID تنظیم شده) پخش می‌کنه.
+    """
+    if update.effective_user.id != TEACHER_ID:
+        return
+    msg = update.message
+    if not msg or not msg.photo:
+        return
+    caption = (msg.caption or "")
+    if "/champion" not in caption.lower():
+        return
+
+    # بزرگ‌ترین نسخه‌ی عکس
+    photo_id = msg.photo[-1].file_id
+    # متن همراه (هر چی بعد از /champion نوشته شده، وگرنه متن پیش‌فرض)
+    extra = caption.split("/champion", 1)[-1].strip()
+    cap = extra if extra else "🏆 قهرمان این ماه معرفی شد! تبریک به برنده 🎉\n\n— Emad English Lab"
+
+    await msg.reply_text("📤 در حال پخش کارت قهرمان...")
+
+    sent = 0
+    failed = 0
+    # ۱) به کانال (اگه تنظیم شده)
+    channel = os.environ.get("REPORT_CHAT_ID", "").strip()
+    if channel:
+        try:
+            await context.bot.send_photo(chat_id=channel, photo=photo_id, caption=cap)
+        except Exception as e:
+            logger.error("champion channel send failed: " + str(e))
+
+    # ۲) به همه‌ی کاربرها
+    try:
+        users = get_all_users()
+    except Exception:
+        users = []
+    for u in users:
+        uid = u.get("telegram_id") if isinstance(u, dict) else None
+        if not uid:
+            continue
+        try:
+            await context.bot.send_photo(chat_id=uid, photo=photo_id, caption=cap)
+            sent += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.1)
+
+    await msg.reply_text(f"✅ کارت قهرمان پخش شد!\nبه {sent} نفر فرستاده شد." + (f"\n({failed} نفر ناموفق)" if failed else ""))
+
+
 async def testreport_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """تست فوری گزارش روزانه — فقط معلم."""
     if update.effective_user.id != TEACHER_ID:
@@ -5415,6 +5671,12 @@ def main():
             m_bootstrap_bank(target_per_level=100)
         except Exception as e:
             logger.error("bootstrap bank failed: " + str(e))
+    # پر کردن یک‌باره‌ی بانک Translation Duel (با TD_BOOTSTRAP=true)
+    if os.environ.get("TD_BOOTSTRAP", "").lower() in ("1", "true", "yes"):
+        try:
+            td_bootstrap_bank()
+        except Exception as e:
+            logger.error("td bootstrap failed: " + str(e))
     app = Application.builder().token(BOT_TOKEN).post_init(_on_post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
@@ -5435,6 +5697,8 @@ def main():
     app.add_handler(CommandHandler("about", about_cmd))
     app.add_handler(CommandHandler("leitner", leitner_cmd))
     app.add_handler(CommandHandler("testreport", testreport_cmd))
+    app.add_handler(CommandHandler("tdstats", tdstats_cmd))
+    app.add_handler(MessageHandler(filters.PHOTO, champion_photo_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     # یادآوری روزانه‌ی جعبه لایتنر — ۱۱ صبح ایران = ۷:۳۰ UTC
