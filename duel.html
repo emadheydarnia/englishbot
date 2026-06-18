@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Translation Duel — Emad English Lab</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  *{ margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  :root{
+    --bg:#0d1424; --panel:#15203a; --panel2:#1d2c49; --line:#27395e;
+    --accent:#ff5a4d; --accent2:#ff7a6e; --blue:#4f8cff; --gold:#ffd84d;
+    --green:#36c46a; --red:#e25563; --text:#eaf1ff; --dim:#9fb3d4;
+  }
+  html,body{ height:100%; }
+  body{ font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--text); overflow-x:hidden; }
+  #app{ max-width:480px; margin:0 auto; min-height:100vh; display:flex; flex-direction:column; }
+  header{ padding:16px; text-align:center; border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,#15203a,#0d1424); }
+  header h1{ font-size:20px; color:var(--accent2); }
+  header .sub{ font-size:12px; color:var(--dim); margin-top:3px; }
+  .screen{ flex:1; padding:14px; display:none; }
+  .screen.active{ display:block; }
+  .btn{ background:linear-gradient(var(--accent2),var(--accent)); color:#fff; border:none;
+    border-radius:12px; padding:14px; font-size:15px; font-weight:700; cursor:pointer;
+    width:100%; margin-top:10px; transition:transform .1s; font-family:inherit; }
+  .btn:active{ transform:scale(.98); }
+  .btn.blue{ background:linear-gradient(#6aa6ff,#4f8cff); }
+  .btn.sec{ background:var(--panel2); border:1px solid var(--line); }
+  .btn.green{ background:linear-gradient(#46d97c,#2ba558); }
+  .btn:disabled{ opacity:.5; }
+  .tabs{ display:flex; gap:6px; padding:10px 12px 0; }
+  .tab{ flex:1; padding:9px 4px; text-align:center; border-radius:10px 10px 0 0; font-size:12.5px;
+    background:var(--panel); color:var(--dim); cursor:pointer; border:1px solid transparent; }
+  .tab.active{ background:var(--panel2); color:var(--text); border-color:var(--line); border-bottom:none; }
+  .card{ background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:12px; }
+  .row-item{ display:flex; align-items:center; justify-content:space-between; gap:10px;
+    background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:8px; }
+  .row-item .who{ font-size:14px; } .row-item .who b{ color:var(--gold); }
+  .join-btn{ background:linear-gradient(#46d97c,#2ba558); color:#fff; border:none; border-radius:10px;
+    padding:8px 18px; font-size:13px; font-weight:700; cursor:pointer; }
+  .msg{ text-align:center; color:var(--dim); font-size:13px; padding:26px 10px; line-height:1.7; }
+  .spinner{ width:34px; height:34px; border:3px solid var(--line); border-top-color:var(--accent);
+    border-radius:50%; animation:spin 1s linear infinite; margin:30px auto; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  .err{ color:var(--red); font-size:13px; text-align:center; margin-top:8px; }
+
+  /* صفحه‌ی بازی */
+  .play-top{ display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+  .qcount{ font-size:13px; color:var(--gold); font-weight:600; }
+  .lvl{ font-size:11px; color:var(--dim); background:var(--panel2); padding:3px 10px; border-radius:20px; }
+  .timer{ width:40px; height:40px; border:3px solid var(--blue); border-radius:50%; display:flex;
+    align-items:center; justify-content:center; font-weight:700; font-size:15px; transition:all .3s; }
+  .timer.warn{ border-color:var(--gold); color:var(--gold); }
+  .timer.danger{ border-color:var(--red); color:#fff; background:var(--red); animation:pulse .6s infinite; }
+  @keyframes pulse{ 50%{ transform:scale(1.12); } }
+  .fa-sentence{ background:linear-gradient(160deg,#1d2c49,#15203a); border:1px solid var(--line);
+    border-radius:16px; padding:24px 18px; font-size:21px; text-align:center; direction:rtl;
+    line-height:1.7; margin-bottom:14px; min-height:90px; display:flex; align-items:center; justify-content:center; }
+  .answer-in{ width:100%; background:var(--bg); border:2px solid var(--line); border-radius:12px;
+    color:var(--text); padding:14px; font-size:16px; font-family:inherit; direction:ltr; }
+  .answer-in:focus{ outline:none; border-color:var(--accent); }
+  .progress-bar{ height:6px; background:var(--panel2); border-radius:6px; overflow:hidden; margin-bottom:14px; }
+  .progress-fill{ height:100%; background:linear-gradient(90deg,var(--accent),var(--gold)); transition:width .3s; }
+
+  /* نتیجه */
+  .result-big{ text-align:center; padding:20px 0; }
+  .result-big .emoji{ font-size:64px; }
+  .result-big .verdict{ font-size:26px; font-weight:800; margin-top:8px; }
+  .result-big .verdict.win{ color:var(--green); } .result-big .verdict.lose{ color:var(--red); }
+  .result-big .verdict.draw{ color:var(--gold); }
+  .scoreline{ display:flex; justify-content:center; align-items:center; gap:18px; margin:16px 0; }
+  .scoreline .s{ text-align:center; } .scoreline .s .n{ font-size:34px; font-weight:800; }
+  .scoreline .s .l{ font-size:12px; color:var(--dim); }
+  .scoreline .vs{ font-size:16px; color:var(--dim); }
+  .feedback{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px;
+    font-size:13px; line-height:1.9; direction:rtl; white-space:pre-wrap; margin-top:12px; }
+  .lb-row{ display:flex; align-items:center; gap:10px; padding:9px 12px; border-bottom:1px solid var(--line); font-size:14px; }
+  .lb-row .rk{ width:26px; color:var(--gold); font-weight:700; }
+  .lb-row .nm{ flex:1; } .lb-row .rec{ font-size:12px; color:var(--dim); }
+  .brand{ margin-top:16px; padding:14px; text-align:center; border-top:1px solid var(--line); }
+  .brand-title{ font-size:13px; font-weight:700; color:var(--gold); margin-bottom:6px; }
+  .brand-link{ display:block; font-size:12px; color:#9ec3f5; text-decoration:none; padding:3px 0; }
+  .waiting-box{ text-align:center; padding:20px; }
+  .pulse-dot{ display:inline-block; width:10px; height:10px; border-radius:50%; background:var(--gold);
+    margin:0 3px; animation:blink 1.2s infinite; }
+  .pulse-dot:nth-child(2){ animation-delay:.2s; } .pulse-dot:nth-child(3){ animation-delay:.4s; }
+  @keyframes blink{ 0%,100%{ opacity:.3; } 50%{ opacity:1; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>🥊 Translation Duel</h1>
+    <div class="sub" id="hdr-sub">Challenge • Translate • Win</div>
+  </header>
+
+  <!-- LOBBY -->
+  <div class="tabs" id="lobby-tabs">
+    <div class="tab active" data-s="home" onclick="switchTab('home')">🏠 Lobby</div>
+    <div class="tab" data-s="results" onclick="switchTab('results')">📜 Results</div>
+    <div class="tab" data-s="lb" onclick="switchTab('lb')">🏆 Ranking</div>
+  </div>
+
+  <div class="screen active" id="screen-home">
+    <button class="btn" onclick="startNewGame()">⚔️ New Game (حریف بطلب)</button>
+    <div style="margin-top:18px; font-size:13px; color:var(--dim);">بازی‌های باز — یکی رو انتخاب کن و بپیوند:</div>
+    <div id="open-list" style="margin-top:10px;"><div class="spinner"></div></div>
+  </div>
+
+  <div class="screen" id="screen-results">
+    <div id="results-list"><div class="spinner"></div></div>
+  </div>
+
+  <div class="screen" id="screen-lb">
+    <div id="lb-list"><div class="spinner"></div></div>
+  </div>
+
+  <!-- PLAY -->
+  <div class="screen" id="screen-play">
+    <div class="play-top">
+      <span class="qcount" id="p-count">1 / 12</span>
+      <span class="lvl" id="p-level">A1</span>
+      <span class="timer" id="p-timer">30</span>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" id="p-progress" style="width:0%"></div></div>
+    <div class="fa-sentence" id="p-sentence">...</div>
+    <input class="answer-in" id="p-answer" placeholder="Type the English translation..." autocomplete="off" autocapitalize="sentences">
+    <button class="btn" id="p-next" onclick="submitAnswer()">Next ➡️</button>
+    <div class="msg" id="p-hint" style="padding:10px;">هر سوال ۳۰ ثانیه وقت داری. بعد از شروع نمی‌تونی خارج شی.</div>
+  </div>
+
+  <!-- SCORE (after one player finishes) -->
+  <div class="screen" id="screen-score">
+    <div class="result-big">
+      <div class="emoji">✅</div>
+      <div class="verdict" style="color:var(--gold)" id="sc-title">تمام شد!</div>
+    </div>
+    <div class="card" style="text-align:center;">
+      <div style="font-size:15px;">امتیاز تو:</div>
+      <div style="font-size:40px; font-weight:800; color:var(--green);" id="sc-score">0 / 12</div>
+    </div>
+    <div id="sc-extra"></div>
+  </div>
+
+  <!-- FINAL RESULT -->
+  <div class="screen" id="screen-final">
+    <div class="result-big">
+      <div class="emoji" id="f-emoji">🏆</div>
+      <div class="verdict" id="f-verdict">برنده شدی!</div>
+    </div>
+    <div class="scoreline">
+      <div class="s"><div class="n" id="f-you">0</div><div class="l">تو</div></div>
+      <div class="vs">—</div>
+      <div class="s"><div class="n" id="f-opp">0</div><div class="l" id="f-oppname">حریف</div></div>
+    </div>
+    <div class="feedback" id="f-feedback"></div>
+    <button class="btn sec" onclick="goLobby()" style="margin-top:14px;">🏠 بازگشت به Lobby</button>
+  </div>
+</div>
+
+<script>
+const tg = window.Telegram ? window.Telegram.WebApp : null;
+if(tg){ tg.ready(); tg.expand(); }
+const INIT = tg ? tg.initData : "";
+
+let questions=[], curQ=0, answers=[], timerId=null, timeLeft=30, QSEC=30;
+let mode=null;        // 'create' | 'join'
+let curMatchId=null;  // برای join و result-poll
+let pollId=null;
+
+async function api(path, body){
+  const res=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(Object.assign({initData:INIT}, body||{}))});
+  if(!res.ok){ const e=await res.json().catch(()=>({error:'http_'+res.status})); throw new Error(e.error||'error'); }
+  return res.json();
+}
+function show(id){ document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  document.getElementById(id).classList.add('active'); }
+function showTabs(v){ document.getElementById('lobby-tabs').style.display=v?'flex':'none'; }
+function esc(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// ── Lobby ──
+function switchTab(s){
+  document.querySelectorAll('#lobby-tabs .tab').forEach(t=>t.classList.toggle('active', t.dataset.s===s));
+  show('screen-'+s);
+  if(s==='home') loadLobby();
+  if(s==='results') loadResults();
+  if(s==='lb') loadLB();
+}
+async function loadLobby(){
+  const el=document.getElementById('open-list');
+  el.innerHTML='<div class="spinner"></div>';
+  try{
+    const r=await api('/api/td/lobby',{});
+    document.getElementById('hdr-sub').textContent='سلام '+r.name+'! آماده‌ی دوئل؟';
+    if(!r.open_matches.length){ el.innerHTML='<div class="msg">الان بازی بازی نیست.<br>تو اولین نفر باش — «New Game» رو بزن!</div>'; return; }
+    el.innerHTML=r.open_matches.map(m=>
+      '<div class="row-item"><div class="who">⚔️ <b>'+esc(m.creator_name)+'</b> حریف می‌طلبد</div>'+
+      '<button class="join-btn" onclick="joinGame('+m.id+')">Join</button></div>').join('');
+  }catch(e){
+    if(e.message==='persian_only'){
+      document.querySelector('#screen-home').innerHTML=
+        '<div class="msg">🌍 This game is available for Persian students only.<br><br>این بازی فقط برای زبان‌آموزان فارسی‌زبانه.</div>';
+      showTabs(false);
+      return;
+    }
+    el.innerHTML='<div class="err">خطا: '+e.message+'</div>';
+  }
+}
+async function loadResults(){
+  const el=document.getElementById('results-list');
+  el.innerHTML='<div class="spinner"></div>';
+  try{
+    const r=await api('/api/td/results',{});
+    if(!r.results.length){ el.innerHTML='<div class="msg">هنوز مسابقه‌ای تموم نشده.</div>'; return; }
+    el.innerHTML=r.results.map(m=>{
+      let w = m.winner==='draw' ? '🤝 مساوی' : '🏆 '+esc(m.winner);
+      return '<div class="row-item"><div class="who">'+esc(m.creator)+' ('+m.cscore+') vs '+esc(m.opponent)+' ('+m.oscore+')</div>'+
+        '<div class="rec" style="color:var(--gold);font-size:12px;">'+w+'</div></div>';
+    }).join('');
+  }catch(e){ el.innerHTML='<div class="err">خطا: '+e.message+'</div>'; }
+}
+async function loadLB(){
+  const el=document.getElementById('lb-list');
+  el.innerHTML='<div class="spinner"></div>';
+  try{
+    const r=await api('/api/td/leaderboard',{});
+    if(!r.leaderboard.length){ el.innerHTML='<div class="msg">هنوز رتبه‌بندی‌ای نیست.</div>'; return; }
+    el.innerHTML='<div class="card" style="padding:6px 4px;">'+r.leaderboard.map((p,i)=>
+      '<div class="lb-row"><span class="rk">'+(i+1)+'</span><span class="nm">'+esc(p.name)+'</span>'+
+      '<span class="rec">'+p.wins+'W '+p.draws+'D '+p.losses+'L · '+p.td_points+'pts</span></div>').join('')+'</div>';
+  }catch(e){ el.innerHTML='<div class="err">خطا: '+e.message+'</div>'; }
+}
+
+// ── Start a new game (creator) ──
+async function startNewGame(){
+  showTabs(false); show('screen-play');
+  document.getElementById('p-sentence').textContent='در حال آماده‌سازی...';
+  try{
+    const r=await api('/api/td/new',{});
+    questions=r.questions; QSEC=r.seconds||30; mode='create'; curMatchId=null;
+    beginPlay();
+  }catch(e){
+    showTabs(true); show('screen-home');
+    alert(e.message==='bank_not_ready'?'بانک سوالات هنوز آماده نیست.':'خطا: '+e.message);
+  }
+}
+// ── Join a game (opponent) ──
+async function joinGame(matchId){
+  showTabs(false); show('screen-play');
+  document.getElementById('p-sentence').textContent='در حال پیوستن...';
+  try{
+    const r=await api('/api/td/join',{match_id:matchId});
+    questions=r.questions; QSEC=r.seconds||30; mode='join'; curMatchId=matchId;
+    beginPlay();
+  }catch(e){
+    showTabs(true); show('screen-home');
+    alert(e.message==='already_taken'||e.message==='not_available'?'این بازی دیگه در دسترس نیست.':'خطا: '+e.message);
+    loadLobby();
+  }
+}
+
+// ── Play flow ──
+function beginPlay(){
+  curQ=0; answers=[];
+  renderQ();
+}
+function renderQ(){
+  if(curQ>=questions.length){ finishPlay(); return; }
+  const q=questions[curQ];
+  document.getElementById('p-count').textContent=(curQ+1)+' / '+questions.length;
+  document.getElementById('p-level').textContent=q.level;
+  document.getElementById('p-sentence').textContent=q.fa;
+  document.getElementById('p-answer').value='';
+  document.getElementById('p-progress').style.width=((curQ)/questions.length*100)+'%';
+  document.getElementById('p-answer').focus();
+  document.getElementById('p-next').textContent = (curQ===questions.length-1)?'پایان ✅':'Next ➡️';
+  startTimer();
+}
+function startTimer(){
+  stopTimer(); timeLeft=QSEC; updTimer();
+  timerId=setInterval(()=>{ timeLeft--; updTimer();
+    if(timeLeft<=0){ stopTimer(); submitAnswer(true); } },1000);
+}
+function stopTimer(){ if(timerId){ clearInterval(timerId); timerId=null; } }
+function updTimer(){
+  const el=document.getElementById('p-timer'); el.textContent=timeLeft;
+  el.classList.remove('warn','danger');
+  if(timeLeft<=5) el.classList.add('danger'); else if(timeLeft<=12) el.classList.add('warn');
+}
+function submitAnswer(auto){
+  stopTimer();
+  const val=document.getElementById('p-answer').value.trim();
+  answers.push(val);
+  curQ++;
+  renderQ();
+}
+async function finishPlay(){
+  stopTimer();
+  show('screen-play');
+  document.getElementById('p-sentence').textContent='در حال تصحیح با هوش مصنوعی... ⏳';
+  document.getElementById('p-answer').style.display='none';
+  document.getElementById('p-next').style.display='none';
+  document.getElementById('p-timer').style.display='none';
+  document.getElementById('p-hint').textContent='چند لحظه صبر کن...';
+  try{
+    if(mode==='create'){
+      const qids=questions.map(q=>q.id);
+      const r=await api('/api/td/submit_new',{question_ids:qids, answers:answers});
+      curMatchId=r.match_id;
+      showCreatorScore(r.your_score, r.total);
+    } else {
+      const r=await api('/api/td/submit_join',{match_id:curMatchId, answers:answers});
+      showFinal(r);
+    }
+  }catch(e){
+    alert('خطا در تصحیح: '+e.message); goLobby();
+  } finally {
+    document.getElementById('p-answer').style.display='';
+    document.getElementById('p-next').style.display='';
+    document.getElementById('p-timer').style.display='';
+  }
+}
+
+// ── Creator: only own score, then wait for opponent ──
+function showCreatorScore(score, total){
+  show('screen-score');
+  document.getElementById('sc-score').textContent=score+' / '+total;
+  document.getElementById('sc-extra').innerHTML=
+    '<div class="waiting-box"><div style="color:var(--dim);font-size:13px;">منتظر حریف بمون تا مسابقه رو تموم کنه.<br>نتیجه‌ی نهایی بعد از اون مشخص می‌شه.</div>'+
+    '<div style="margin-top:12px;"><span class="pulse-dot"></span><span class="pulse-dot"></span><span class="pulse-dot"></span></div>'+
+    '<button class="btn sec" onclick="checkResult()" style="margin-top:16px;">🔄 بررسی نتیجه</button>'+
+    '<button class="btn sec" onclick="goLobby()" style="margin-top:8px;">🏠 بعداً برمی‌گردم</button></div>';
+  // poll هر ۱۰ ثانیه
+  if(pollId) clearInterval(pollId);
+  pollId=setInterval(checkResult, 10000);
+}
+async function checkResult(){
+  if(!curMatchId) return;
+  try{
+    const r=await api('/api/td/result',{match_id:curMatchId});
+    if(r.status==='finished'){
+      if(pollId){ clearInterval(pollId); pollId=null; }
+      showFinal({your_score:r.your_score, total:r.total, opponent_score:r.opponent_score,
+        opponent_name:r.opponent_name, is_draw:r.is_draw, you_won:r.you_won, feedback:''});
+    }
+  }catch(e){}
+}
+
+// ── Final result ──
+function showFinal(r){
+  if(pollId){ clearInterval(pollId); pollId=null; }
+  show('screen-final');
+  const emoji=document.getElementById('f-emoji'), verdict=document.getElementById('f-verdict');
+  verdict.classList.remove('win','lose','draw');
+  if(r.is_draw){ emoji.textContent='🤝'; verdict.textContent='مساوی شد!'; verdict.classList.add('draw'); }
+  else if(r.you_won){ emoji.textContent='🏆'; verdict.textContent='بردی! 🎉'; verdict.classList.add('win'); }
+  else { emoji.textContent='😅'; verdict.textContent='باختی'; verdict.classList.add('lose'); }
+  document.getElementById('f-you').textContent=r.your_score;
+  document.getElementById('f-opp').textContent=r.opponent_score;
+  document.getElementById('f-oppname').textContent=r.opponent_name||'حریف';
+  const fb=document.getElementById('f-feedback');
+  if(r.feedback){ fb.style.display=''; fb.textContent=r.feedback; } else { fb.style.display='none'; }
+}
+function goLobby(){
+  if(pollId){ clearInterval(pollId); pollId=null; }
+  // ریست UI بازی
+  document.getElementById('p-answer').style.display='';
+  document.getElementById('p-next').style.display='';
+  document.getElementById('p-timer').style.display='';
+  showTabs(true); switchTab('home');
+}
+
+// boot
+if(!INIT){ document.getElementById('open-list').innerHTML='<div class="err">لطفاً از داخل تلگرام باز کن.</div>'; }
+else { loadLobby(); }
+</script>
+</body>
+</html>

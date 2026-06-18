@@ -20,6 +20,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 MINIAPP_URL = os.environ.get("MINIAPP_URL", "")
 # آدرس Mini App جعبه لایتنر (روی همون سرور، مسیر /leitner)
 LEITNER_URL = (MINIAPP_URL.rstrip("/") + "/leitner") if MINIAPP_URL else ""
+TD_URL = (MINIAPP_URL.rstrip("/") + "/duel") if MINIAPP_URL else ""
 TEACHER_ID = int(os.environ.get("TEACHER_ID", "0"))
 EXAM_TIME_MINUTES = int(os.environ.get("EXAM_TIME_MINUTES", "30"))
 import requests
@@ -3501,6 +3502,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Persian Students\n\nیه گزینه انتخاب کن:", reply_markup=persian_menu_keyboard())
 
     elif data == "lang_german":
+        # علامت‌گذاری کاربر به‌عنوان آلمانی (برای محدود کردن بازی‌های فارسی‌محور)
+        try:
+            u = get_user(user_id)
+            if u:
+                save_user(user_id, u.get("name", ""), u.get("student_class", "German"), language="de", phone=u.get("phone", "") or "")
+        except Exception:
+            pass
         await query.edit_message_text("German Students\n\nBitte wähle eine Kategorie:", reply_markup=german_menu_keyboard())
 
     elif data == "cat_vocabulary_de":
@@ -4541,6 +4549,278 @@ def td_get_questions_by_ids(ids):
         print("td_get_questions_by_ids error: " + str(e))
         return []
 
+def td_score_answers(questions, answers):
+    """
+    جواب‌های کاربر رو با AI تصحیح می‌کنه (انعطاف‌پذیر — ترجمه‌ی درستِ متفاوت هم قبول).
+    questions: لیست dict با fa و en_ref
+    answers: لیست رشته (جواب کاربر، به ترتیب)
+    خروجی: (score, details) که details لیست dict هست با درست/غلط هر سوال.
+    """
+    import json as _json
+    # ساخت متن سوال‌ها و جواب‌ها برای AI
+    items = []
+    for i, q in enumerate(questions):
+        ua = answers[i] if i < len(answers) else ""
+        items.append({
+            "n": i + 1,
+            "persian": q.get("fa", ""),
+            "reference": q.get("en_ref", ""),
+            "student": (ua or "").strip()
+        })
+    prompt = (
+        "You are grading a Persian-to-English translation quiz. For each item, decide if the "
+        "student's English translation correctly conveys the meaning of the Persian sentence.\n"
+        "BE FLEXIBLE: accept any correct translation even if wording differs from the reference. "
+        "Minor typos or small grammar slips that don't change meaning are still CORRECT. "
+        "Empty or meaningless or wrong-meaning answers are INCORRECT.\n\n"
+        "Return ONLY a JSON array, one object per item, in order:\n"
+        '{"n": 1, "correct": true/false}\n\n'
+        "Items:\n" + _json.dumps(items, ensure_ascii=False)
+    )
+    try:
+        resp = call_gemini_api([], prompt)
+    except Exception as e:
+        print("td_score_answers gemini error: " + str(e))
+        resp = None
+    details = []
+    score = 0
+    if resp:
+        txt = resp.strip()
+        if "```" in txt:
+            parts = txt.split("```")
+            if len(parts) >= 2:
+                txt = parts[1].replace("json", "", 1).strip()
+        try:
+            s = txt.find("["); e = txt.rfind("]")
+            arr = _json.loads(txt[s:e+1]) if s >= 0 and e > s else []
+        except Exception:
+            arr = []
+        # نگاشت n → correct
+        cmap = {}
+        for o in arr:
+            try:
+                cmap[int(o.get("n"))] = bool(o.get("correct"))
+            except Exception:
+                pass
+        for i in range(len(questions)):
+            ok = cmap.get(i + 1, False)
+            if ok:
+                score += 1
+            details.append({"correct": ok})
+    else:
+        # اگه AI کار نکرد، همه رو غلط حساب نکن — یه fallback ساده‌ی تطبیق متن
+        for i, q in enumerate(questions):
+            ua = (answers[i] if i < len(answers) else "").strip().lower()
+            ref = (q.get("en_ref", "") or "").strip().lower()
+            ok = bool(ua) and (ua == ref)
+            if ok:
+                score += 1
+            details.append({"correct": ok})
+    return score, details
+
+def td_generate_feedback(questions, creator_answers, opponent_answers, creator_name, opponent_name):
+    """فیدبک کوتاه و آموزشی نهایی (بعد از اینکه هر دو بازی کردن)."""
+    import json as _json
+    items = []
+    for i, q in enumerate(questions):
+        items.append({
+            "persian": q.get("fa", ""),
+            "reference": q.get("en_ref", ""),
+            creator_name: (creator_answers[i] if i < len(creator_answers) else ""),
+            opponent_name: (opponent_answers[i] if i < len(opponent_answers) else ""),
+        })
+    prompt = (
+        "تو یه معلم زبان انگلیسی هستی. این یه مسابقه‌ی ترجمه‌ی فارسی به انگلیسی بین دو نفر بوده.\n"
+        "برای هر جمله، ترجمه‌ی مرجع رو بده و اگه اشتباه مهمی توی جواب‌ها بود کوتاه توضیح بده.\n"
+        "فیدبک باید کوتاه، آموزشی و دوستانه باشه (فارسی بنویس). برای هر جمله حداکثر ۱-۲ خط.\n"
+        "خیلی طولانی ننویس. اول هر جمله شماره بذار.\n\n"
+        "جمله‌ها و جواب‌ها:\n" + _json.dumps(items, ensure_ascii=False)
+    )
+    try:
+        resp = call_gemini_api([], prompt)
+        return resp.strip() if resp else ""
+    except Exception as e:
+        print("td_generate_feedback error: " + str(e))
+        return ""
+
+def td_create_match(creator_id, creator_name, question_ids, creator_score, creator_answers):
+    """
+    یه بازی جدید می‌سازه (نفر اول مسابقه رو داده). برمی‌گردونه match_id.
+    وضعیت اولیه: waiting (منتظر حریف).
+    """
+    import json as _json
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO td_matches
+            (creator_id, creator_name, question_ids, creator_score, creator_answers, status)
+            VALUES (%s,%s,%s,%s,%s,'waiting') RETURNING id
+        """, (creator_id, creator_name, _json.dumps(question_ids),
+              creator_score, _json.dumps(creator_answers, ensure_ascii=False)))
+        mid = cur.fetchone()[0]
+        conn.commit(); cur.close(); conn.close()
+        return mid
+    except Exception as e:
+        print("td_create_match error: " + str(e))
+        return None
+
+def td_list_open_matches(exclude_id=None):
+    """لیست بازی‌های منتظرِ حریف (waiting) که حریفشون پر نشده و مال خود کاربر نیست."""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT id, creator_id, creator_name, created_at
+            FROM td_matches WHERE status='waiting'
+            ORDER BY created_at DESC LIMIT 50
+        """)
+        rows = cur.fetchall(); cur.close(); conn.close()
+        out = []
+        for r in rows:
+            if exclude_id and r["creator_id"] == exclude_id:
+                continue  # نمی‌تونی به بازی خودت join شی
+            out.append(dict(r))
+        return out
+    except Exception as e:
+        print("td_list_open_matches error: " + str(e))
+        return []
+
+def td_get_match(match_id):
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM td_matches WHERE id=%s", (match_id,))
+        row = cur.fetchone(); cur.close(); conn.close()
+        return dict(row) if row else None
+    except Exception as e:
+        print("td_get_match error: " + str(e))
+        return None
+
+def td_claim_match(match_id, opponent_id, opponent_name):
+    """
+    حریف یه بازی waiting رو می‌گیره (atomic — جلوی join همزمانِ دو نفر رو می‌گیره).
+    وضعیت می‌شه 'playing'. برمی‌گردونه True اگه موفق شد.
+    """
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE td_matches SET opponent_id=%s, opponent_name=%s, status='playing'
+            WHERE id=%s AND status='waiting' AND creator_id != %s
+        """, (opponent_id, opponent_name, match_id, opponent_id))
+        ok = cur.rowcount > 0
+        conn.commit(); cur.close(); conn.close()
+        return ok
+    except Exception as e:
+        print("td_claim_match error: " + str(e))
+        return False
+
+def td_finalize_match(match_id, opponent_score, opponent_answers):
+    """
+    وقتی نفر دوم بازی رو تموم کرد: برنده رو مشخص می‌کنه، امتیاز لیدربورد اصلی رو اعمال می‌کنه،
+    آمار داخلی رو آپدیت می‌کنه. خروجی: dict نتیجه‌ی نهایی.
+    """
+    import json as _json
+    m = td_get_match(match_id)
+    if not m or m["status"] != "playing":
+        return None
+    cs = m["creator_score"] or 0
+    os_ = opponent_score
+    # تعیین برنده
+    if cs > os_:
+        winner_id = m["creator_id"]
+    elif os_ > cs:
+        winner_id = m["opponent_id"]
+    else:
+        winner_id = None  # مساوی
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE td_matches SET opponent_score=%s, opponent_answers=%s,
+                   status='finished', winner_id=%s, finished_at=NOW()
+            WHERE id=%s
+        """, (os_, _json.dumps(opponent_answers, ensure_ascii=False), winner_id, match_id))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        print("td_finalize update error: " + str(e))
+
+    # امتیاز لیدربورد اصلی: برنده +۴۰، بازنده −۱۰، مساوی هیچی
+    if winner_id:
+        loser_id = m["opponent_id"] if winner_id == m["creator_id"] else m["creator_id"]
+        add_points(winner_id, 40, "Translation Duel win")
+        add_points(loser_id, -10, "Translation Duel loss")
+
+    # آمار داخلی (برد=۳، مساوی=۱)
+    if winner_id is None:
+        td_update_stats(m["creator_id"], m["creator_name"], "draw")
+        td_update_stats(m["opponent_id"], m["opponent_name"], "draw")
+    else:
+        loser_id = m["opponent_id"] if winner_id == m["creator_id"] else m["creator_id"]
+        win_name = m["creator_name"] if winner_id == m["creator_id"] else m["opponent_name"]
+        lose_name = m["opponent_name"] if winner_id == m["creator_id"] else m["creator_name"]
+        td_update_stats(winner_id, win_name, "win")
+        td_update_stats(loser_id, lose_name, "loss")
+
+    return {
+        "creator_name": m["creator_name"], "opponent_name": m["opponent_name"],
+        "creator_score": cs, "opponent_score": os_,
+        "winner_id": winner_id,
+        "is_draw": winner_id is None,
+    }
+
+def td_update_stats(uid, name, result):
+    """آمار داخلی یه بازیکن رو آپدیت می‌کنه. result: win/draw/loss"""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO td_stats (telegram_id, name, wins, draws, losses, td_points)
+            VALUES (%s,%s,0,0,0,0)
+            ON CONFLICT (telegram_id) DO UPDATE SET name=EXCLUDED.name
+        """, (uid, name))
+        if result == "win":
+            cur.execute("UPDATE td_stats SET wins=wins+1, td_points=td_points+3 WHERE telegram_id=%s", (uid,))
+        elif result == "draw":
+            cur.execute("UPDATE td_stats SET draws=draws+1, td_points=td_points+1 WHERE telegram_id=%s", (uid,))
+        else:
+            cur.execute("UPDATE td_stats SET losses=losses+1 WHERE telegram_id=%s", (uid,))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        print("td_update_stats error: " + str(e))
+
+def td_internal_leaderboard():
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT name, wins, draws, losses, td_points
+            FROM td_stats ORDER BY td_points DESC, wins DESC LIMIT 50
+        """)
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print("td_internal_leaderboard error: " + str(e))
+        return []
+
+def td_recent_results(limit=30):
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT creator_name, opponent_name, creator_score, opponent_score, winner_id,
+                   creator_id, opponent_id, finished_at
+            FROM td_matches WHERE status='finished'
+            ORDER BY finished_at DESC LIMIT %s
+        """, (limit,))
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print("td_recent_results error: " + str(e))
+        return []
+
 def td_bootstrap_bank(max_seconds=0):
     """
     یک‌بار بانک ۱۲۰۰ جمله‌ای (۶ سطح × ۲۰۰) رو با AI می‌سازه.
@@ -5320,6 +5600,193 @@ async def api_leitner_list(request):
         out = []
     return web.json_response({"cards": out})
 
+def _td_ensure_user(user):
+    uid = user["id"]
+    if not get_user(uid):
+        nm = (user.get("first_name", "") + " " + user.get("last_name", "")).strip() or user.get("username", "Player")
+        save_user(uid, nm, "MiniApp")
+    return (user.get("first_name", "") or user.get("username", "") or "Player").strip()
+
+def _td_is_german(uid):
+    try:
+        u = get_user(uid)
+        return bool(u and (u.get("language") == "de"))
+    except Exception:
+        return False
+
+async def api_td_lobby(request):
+    """صفحه‌ی اصلی: لیست بازی‌های باز + آمار داخلی کاربر."""
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    if _td_is_german(user["id"]):
+        return web.json_response({"error": "persian_only"}, status=403)
+    name = _td_ensure_user(user)
+    opens = td_list_open_matches(exclude_id=user["id"])
+    return web.json_response({
+        "name": name,
+        "open_matches": [{"id": m["id"], "creator_name": m["creator_name"]} for m in opens],
+    })
+
+async def api_td_new(request):
+    """۱۲ سوال برای یه بازی جدید می‌ده (هنوز ذخیره نشده — بعد از بازی submit می‌شه)."""
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    if _td_is_german(user["id"]):
+        return web.json_response({"error": "persian_only"}, status=403)
+    _td_ensure_user(user)
+    qs = td_pick_questions()
+    if len(qs) < 12:
+        return web.json_response({"error": "bank_not_ready"}, status=503)
+    out = [{"id": q["id"], "level": q["level"], "fa": q["fa"]} for q in qs]
+    return web.json_response({"questions": out, "seconds": 30})
+
+async def api_td_submit_new(request):
+    """نفر اول جواب‌ها رو می‌فرسته → AI تصحیح → بازی waiting ساخته می‌شه."""
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    name = _td_ensure_user(user)
+    qids = data.get("question_ids", [])
+    answers = data.get("answers", [])
+    if not qids or len(qids) != 12:
+        return web.json_response({"error": "bad_data"}, status=400)
+    questions = td_get_questions_by_ids(qids)
+    score, _ = td_score_answers(questions, answers)
+    mid = td_create_match(user["id"], name, qids, score, answers)
+    if not mid:
+        return web.json_response({"error": "save_failed"}, status=500)
+    # نفر اول فقط امتیاز خودش رو می‌بینه (نتیجه‌ی نهایی بعداً)
+    return web.json_response({"match_id": mid, "your_score": score, "total": 12, "waiting": True})
+
+async def api_td_join(request):
+    """حریف یه بازی waiting رو می‌گیره و همون ۱۲ سوال رو می‌گیره."""
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    name = _td_ensure_user(user)
+    try:
+        match_id = int(data.get("match_id"))
+    except Exception:
+        return web.json_response({"error": "bad_id"}, status=400)
+    m = td_get_match(match_id)
+    if not m or m["status"] != "waiting":
+        return web.json_response({"error": "not_available"}, status=409)
+    ok = td_claim_match(match_id, user["id"], name)
+    if not ok:
+        return web.json_response({"error": "already_taken"}, status=409)
+    import json as _json
+    qids = _json.loads(m["question_ids"])
+    questions = td_get_questions_by_ids(qids)
+    out = [{"id": q["id"], "level": q["level"], "fa": q["fa"]} for q in questions]
+    return web.json_response({"questions": out, "seconds": 30, "match_id": match_id,
+                              "opponent_name": m["creator_name"]})
+
+async def api_td_submit_join(request):
+    """نفر دوم جواب‌ها رو می‌فرسته → تصحیح → نتیجه‌ی نهایی + امتیازها + فیدبک."""
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    _td_ensure_user(user)
+    try:
+        match_id = int(data.get("match_id"))
+    except Exception:
+        return web.json_response({"error": "bad_id"}, status=400)
+    answers = data.get("answers", [])
+    m = td_get_match(match_id)
+    if not m or m["status"] != "playing" or m["opponent_id"] != user["id"]:
+        return web.json_response({"error": "bad_match"}, status=409)
+    import json as _json
+    qids = _json.loads(m["question_ids"])
+    questions = td_get_questions_by_ids(qids)
+    score, _ = td_score_answers(questions, answers)
+    result = td_finalize_match(match_id, score, answers)
+    if not result:
+        return web.json_response({"error": "finalize_failed"}, status=500)
+    you_won = (result["winner_id"] == user["id"])
+    return web.json_response({
+        "your_score": score, "total": 12,
+        "opponent_score": result["creator_score"],
+        "opponent_name": result["creator_name"],
+        "is_draw": result["is_draw"],
+        "you_won": you_won,
+        "feedback": "",
+    })
+
+async def api_td_result(request):
+    """نفر اول چک می‌کنه که آیا حریفش بازی رو تموم کرده و نتیجه چیه."""
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    try:
+        match_id = int(data.get("match_id"))
+    except Exception:
+        return web.json_response({"error": "bad_id"}, status=400)
+    m = td_get_match(match_id)
+    if not m or m["creator_id"] != user["id"]:
+        return web.json_response({"error": "bad_match"}, status=409)
+    if m["status"] != "finished":
+        return web.json_response({"status": "waiting"})
+    you_won = (m["winner_id"] == user["id"])
+    is_draw = (m["winner_id"] is None)
+    return web.json_response({
+        "status": "finished",
+        "your_score": m["creator_score"], "total": 12,
+        "opponent_score": m["opponent_score"], "opponent_name": m["opponent_name"],
+        "is_draw": is_draw, "you_won": you_won,
+    })
+
+async def api_td_results(request):
+    """لیست عمومی نتایج اخیر."""
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    res = td_recent_results(30)
+    out = []
+    for r in res:
+        if r["winner_id"] is None:
+            winner = "draw"
+        else:
+            winner = r["creator_name"] if r["winner_id"] == r["creator_id"] else r["opponent_name"]
+        out.append({
+            "creator": r["creator_name"], "opponent": r["opponent_name"],
+            "cscore": r["creator_score"], "oscore": r["opponent_score"],
+            "winner": winner,
+        })
+    return web.json_response({"results": out})
+
+async def api_td_leaderboard(request):
+    """لیدربورد داخلی بازی (برد/مساوی/باخت)."""
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    lb = td_internal_leaderboard()
+    return web.json_response({"leaderboard": lb})
+
+async def api_td_index(request):
+    from aiohttp import web
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "duel.html")
+    if os.path.exists(path):
+        return web.FileResponse(path)
+    return web.Response(text="Translation Duel file not found.", status=404)
+
 async def start_web_server(app_ptb):
     """وب‌سرور aiohttp رو کنار bot بالا میاره."""
     try:
@@ -5346,6 +5813,15 @@ async def start_web_server(app_ptb):
     web_app.router.add_post("/api/leitner/delete", api_leitner_delete)
     web_app.router.add_post("/api/leitner/list", api_leitner_list)
     web_app.router.add_post("/api/leitner/reminder", api_leitner_reminder)
+    web_app.router.add_get("/duel", api_td_index)
+    web_app.router.add_post("/api/td/lobby", api_td_lobby)
+    web_app.router.add_post("/api/td/new", api_td_new)
+    web_app.router.add_post("/api/td/submit_new", api_td_submit_new)
+    web_app.router.add_post("/api/td/join", api_td_join)
+    web_app.router.add_post("/api/td/submit_join", api_td_submit_join)
+    web_app.router.add_post("/api/td/result", api_td_result)
+    web_app.router.add_post("/api/td/results", api_td_results)
+    web_app.router.add_post("/api/td/leaderboard", api_td_leaderboard)
     runner = web.AppRunner(web_app)
     await runner.setup()
     port = int(os.environ.get("PORT", "8080"))

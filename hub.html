@@ -46,6 +46,11 @@
     <div class="txt"><div class="t">Millionaire Game</div><div class="d">Test your English grammar and climb to €1,000,000</div></div>
   </div>
 
+  <div class="choice" id="c-duel">
+    <div class="ico">🥊</div>
+    <div class="txt"><div class="t">Translation Duel</div><div class="d">Challenge others — translate 12 sentences and beat your rival</div></div>
+  </div>
+
   <div class="err" id="err"></div>
 
   <div class="brand">
@@ -65,6 +70,7 @@ const base = location.origin;
 
 document.getElementById('c-leitner').onclick = ()=>{ location.href = base + '/leitner'; };
 document.getElementById('c-millionaire').onclick = ()=>{ location.href = base + '/'; };
+document.getElementById('c-duel').onclick = ()=>{ location.href = base + '/duel'; };
 </script>
 </body>
 </html>
