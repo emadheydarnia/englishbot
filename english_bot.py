@@ -4500,6 +4500,8 @@ def m_bank_count_by_level():
 TD_STRUCTURE = ["A1", "A2", "A2", "A2", "B1", "B1", "B2", "B2", "C1", "C1", "C2", "C2"]
 TD_LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
 TD_TARGET_PER_LEVEL = 200
+# زمان هر سوال بر اساس سطح (ثانیه)
+TD_SECONDS_BY_LEVEL = {"A1": 30, "A2": 30, "B1": 45, "B2": 45, "C1": 60, "C2": 60}
 
 def td_bank_count_by_level():
     try:
@@ -5644,7 +5646,7 @@ async def api_td_new(request):
     if len(qs) < 12:
         return web.json_response({"error": "bank_not_ready"}, status=503)
     out = [{"id": q["id"], "level": q["level"], "fa": q["fa"]} for q in qs]
-    return web.json_response({"questions": out, "seconds": 30})
+    return web.json_response({"questions": out, "seconds_by_level": TD_SECONDS_BY_LEVEL})
 
 async def api_td_submit_new(request):
     """نفر اول جواب‌ها رو می‌فرسته → AI تصحیح → بازی waiting ساخته می‌شه."""
@@ -5688,7 +5690,7 @@ async def api_td_join(request):
     qids = _json.loads(m["question_ids"])
     questions = td_get_questions_by_ids(qids)
     out = [{"id": q["id"], "level": q["level"], "fa": q["fa"]} for q in questions]
-    return web.json_response({"questions": out, "seconds": 30, "match_id": match_id,
+    return web.json_response({"questions": out, "seconds_by_level": TD_SECONDS_BY_LEVEL, "match_id": match_id,
                               "opponent_name": m["creator_name"]})
 
 async def api_td_submit_join(request):

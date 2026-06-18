@@ -56,7 +56,8 @@
   @keyframes pulse{ 50%{ transform:scale(1.12); } }
   .fa-sentence{ background:linear-gradient(160deg,#1d2c49,#15203a); border:1px solid var(--line);
     border-radius:16px; padding:24px 18px; font-size:21px; text-align:center; direction:rtl;
-    line-height:1.7; margin-bottom:14px; min-height:90px; display:flex; align-items:center; justify-content:center; }
+    line-height:1.7; margin-bottom:14px; min-height:90px; display:flex; align-items:center; justify-content:center;
+    user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
   .answer-in{ width:100%; background:var(--bg); border:2px solid var(--line); border-radius:12px;
     color:var(--text); padding:14px; font-size:16px; font-family:inherit; direction:ltr; }
   .answer-in:focus{ outline:none; border-color:var(--accent); }
@@ -164,7 +165,7 @@ const tg = window.Telegram ? window.Telegram.WebApp : null;
 if(tg){ tg.ready(); tg.expand(); }
 const INIT = tg ? tg.initData : "";
 
-let questions=[], curQ=0, answers=[], timerId=null, timeLeft=30, QSEC=30;
+let questions=[], curQ=0, answers=[], timerId=null, timeLeft=30, SECMAP={"A1":30,"A2":30,"B1":45,"B2":45,"C1":60,"C2":60};
 let mode=null;        // 'create' | 'join'
 let curMatchId=null;  // برای join و result-poll
 let pollId=null;
@@ -239,7 +240,7 @@ async function startNewGame(){
   document.getElementById('p-sentence').textContent='در حال آماده‌سازی...';
   try{
     const r=await api('/api/td/new',{});
-    questions=r.questions; QSEC=r.seconds||30; mode='create'; curMatchId=null;
+    questions=r.questions; if(r.seconds_by_level) SECMAP=r.seconds_by_level; mode='create'; curMatchId=null;
     beginPlay();
   }catch(e){
     showTabs(true); show('screen-home');
@@ -252,7 +253,7 @@ async function joinGame(matchId){
   document.getElementById('p-sentence').textContent='در حال پیوستن...';
   try{
     const r=await api('/api/td/join',{match_id:matchId});
-    questions=r.questions; QSEC=r.seconds||30; mode='join'; curMatchId=matchId;
+    questions=r.questions; if(r.seconds_by_level) SECMAP=r.seconds_by_level; mode='join'; curMatchId=matchId;
     beginPlay();
   }catch(e){
     showTabs(true); show('screen-home');
@@ -279,7 +280,9 @@ function renderQ(){
   startTimer();
 }
 function startTimer(){
-  stopTimer(); timeLeft=QSEC; updTimer();
+  stopTimer();
+  const lv=questions[curQ] ? questions[curQ].level : "A1";
+  timeLeft=SECMAP[lv]||30; updTimer();
   timerId=setInterval(()=>{ timeLeft--; updTimer();
     if(timeLeft<=0){ stopTimer(); submitAnswer(true); } },1000);
 }
@@ -373,6 +376,13 @@ function goLobby(){
 }
 
 // boot
+// ── ضدتقلب: جلوگیری از پیست در جواب و کپی از سوال ──
+(function(){
+  const ans=document.getElementById('p-answer');
+  ['paste','drop'].forEach(ev=>ans.addEventListener(ev, e=>{ e.preventDefault(); }));
+  const sen=document.getElementById('p-sentence');
+  ['copy','cut','contextmenu','selectstart'].forEach(ev=>sen.addEventListener(ev, e=>{ e.preventDefault(); }));
+})();
 if(!INIT){ document.getElementById('open-list').innerHTML='<div class="err">لطفاً از داخل تلگرام باز کن.</div>'; }
 else { loadLobby(); }
 </script>
