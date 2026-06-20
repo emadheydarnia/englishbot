@@ -4749,11 +4749,13 @@ def td_finalize_match(match_id, opponent_score, opponent_answers):
     except Exception as e:
         print("td_finalize update error: " + str(e))
 
-    # امتیاز لیدربورد اصلی: برنده +۴۰، بازنده −۱۰، مساوی هیچی
+    # امتیاز لیدربورد اصلی: برنده +۱۰۰، بازنده ۰، مساوی هر نفر +۱۰
     if winner_id:
-        loser_id = m["opponent_id"] if winner_id == m["creator_id"] else m["creator_id"]
-        add_points(winner_id, 40, "Translation Duel win")
-        add_points(loser_id, -10, "Translation Duel loss")
+        add_points(winner_id, 100, "Translation Duel win")
+    else:
+        # مساوی → هر دو +۱۰
+        add_points(m["creator_id"], 10, "Translation Duel draw")
+        add_points(m["opponent_id"], 10, "Translation Duel draw")
 
     # آمار داخلی (برد=۳، مساوی=۱)
     if winner_id is None:
@@ -6081,6 +6083,48 @@ async def tdstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
+async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """پیام همگانی به همه‌ی کاربرها — فقط معلم. روش: /broadcast متن پیام"""
+    if update.effective_user.id != TEACHER_ID:
+        await update.message.reply_text("🚫 Teacher only.")
+        return
+    # متن بعد از /broadcast
+    text = ""
+    if context.args:
+        text = " ".join(context.args).strip()
+    # اگه روی یه پیام reply شده، متن همون پیام رو بفرست
+    if not text and update.message.reply_to_message and update.message.reply_to_message.text:
+        text = update.message.reply_to_message.text.strip()
+    if not text:
+        await update.message.reply_text(
+            "✍️ روش استفاده:\n\n"
+            "/broadcast متنِ پیام\n\n"
+            "یا روی یه پیام reply کن و /broadcast بزن.\n"
+            "پیام به همه‌ی کاربرها فرستاده می‌شه."
+        )
+        return
+
+    await update.message.reply_text("📤 در حال ارسال پیام همگانی...")
+    try:
+        users = get_all_users()
+    except Exception:
+        users = []
+    sent = 0; failed = 0
+    for u in users:
+        uid = u.get("telegram_id") if isinstance(u, dict) else None
+        if not uid:
+            continue
+        try:
+            await context.bot.send_message(chat_id=uid, text=fix_rtl(text))
+            sent += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.1)
+    await update.message.reply_text(
+        f"✅ پیام همگانی فرستاده شد!\nبه {sent} نفر رسید." + (f"\n({failed} نفر ناموفق)" if failed else "")
+    )
+
+
 async def champion_photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     معلم عکس کارت قهرمان رو با کپشن /champion می‌فرسته.
@@ -6210,6 +6254,7 @@ def main():
     app.add_handler(CommandHandler("leitner", leitner_cmd))
     app.add_handler(CommandHandler("testreport", testreport_cmd))
     app.add_handler(CommandHandler("tdstats", tdstats_cmd))
+    app.add_handler(CommandHandler("broadcast", broadcast_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, champion_photo_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
