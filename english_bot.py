@@ -5171,11 +5171,14 @@ async def api_start(request):
         save_user(uid, nm, "MiniApp")
 
     prog = m_get_progress(uid)
-    li = min(prog["level_index"] if prog else 0, len(MILLIONAIRE_LEAGUE) - 1)
+    raw_li = prog["level_index"] if prog else 0
+    all_done = raw_li >= len(MILLIONAIRE_LEAGUE)
+    li = min(raw_li, len(MILLIONAIRE_LEAGUE) - 1)
     g = {
         "active": True, "level_index": li, "qindex": 0,
         "current_q": None, "hidden": [], "correct_count": 0,
         "used_5050": False, "used_skip": False, "used_phone": False, "used_ids": set(),
+        "no_score": all_done,   # وقتی همه‌ی فصل‌ها تموم شدن: بازی آزاد بدون امتیاز
     }
     M_API_GAMES[uid] = g
     try:
@@ -5190,6 +5193,8 @@ async def api_start(request):
         "progress": m_api_progress_payload(uid),
         "lifelines": {"fifty": True, "skip": True, "phone": True},
         "seconds": M_QUESTION_SECONDS,
+        "all_done": all_done,
+        "practice_mode": all_done,
     })
 
 async def api_answer(request):
@@ -5215,19 +5220,23 @@ async def api_answer(request):
     started = g.get("q_started_at")
     if started and (_t.time() - started) > (M_QUESTION_SECONDS + M_TIMER_GRACE):
         money = m_money_at(g["qindex"])
-        m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
-                    money, g["correct_count"], False)
+        practice = g.get("no_score")
+        if not practice:
+            m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
+                        money, g["correct_count"], False)
         pts = 0
-        if money >= 32000: pts = 30
-        elif money >= 1000: pts = 15
-        if pts > 0:
-            add_points(uid, pts, "miniapp millionaire timeout L" + str(g["level_index"]+1))
+        if not practice:
+            if money >= 32000: pts = 30
+            elif money >= 1000: pts = 15
+            if pts > 0:
+                add_points(uid, pts, "miniapp millionaire timeout L" + str(g["level_index"]+1))
         g["active"] = False
         return web.json_response({
             "correct": False, "choice": chosen, "correct_choice": correct,
             "explanation": q.get("explanation_fa", ""),
             "won_money": money, "outcome": "timeout",
             "points": pts, "progress": m_api_progress_payload(uid),
+            "practice_mode": bool(practice),
         })
 
     is_correct = (chosen == correct)
@@ -5237,16 +5246,21 @@ async def api_answer(request):
         money_now = MILLIONAIRE_LADDER[g["qindex"]]
         # سوال آخر → برد کامل
         if g["qindex"] >= MILLIONAIRE_TOTAL_Q - 1:
-            m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
-                        1000000, g["correct_count"], True)
-            pts = 100
-            add_points(uid, pts, "miniapp millionaire win L" + str(g["level_index"]+1))
+            practice = g.get("no_score")
+            if not practice:
+                m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
+                            1000000, g["correct_count"], True)
+                pts = 100
+                add_points(uid, pts, "miniapp millionaire win L" + str(g["level_index"]+1))
+            else:
+                pts = 0
             g["active"] = False
             return web.json_response({
                 "correct": True, "choice": chosen, "correct_choice": correct,
                 "explanation": q.get("explanation_fa", ""),
                 "won_money": 1000000, "outcome": "win",
                 "points": pts, "progress": m_api_progress_payload(uid),
+                "practice_mode": bool(practice),
             })
         # برو سوال بعد
         g["qindex"] += 1
@@ -5269,19 +5283,23 @@ async def api_answer(request):
     else:
         # باخت → پول safe haven
         money = m_money_at(g["qindex"])
-        m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
-                    money, g["correct_count"], False)
+        practice = g.get("no_score")
+        if not practice:
+            m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
+                        money, g["correct_count"], False)
         pts = 0
-        if money >= 32000: pts = 30
-        elif money >= 1000: pts = 15
-        if pts > 0:
-            add_points(uid, pts, "miniapp millionaire lose L" + str(g["level_index"]+1))
+        if not practice:
+            if money >= 32000: pts = 30
+            elif money >= 1000: pts = 15
+            if pts > 0:
+                add_points(uid, pts, "miniapp millionaire lose L" + str(g["level_index"]+1))
         g["active"] = False
         return web.json_response({
             "correct": False, "choice": chosen, "correct_choice": correct,
             "explanation": q.get("explanation_fa", ""),
             "won_money": money, "outcome": "lose",
             "points": pts, "progress": m_api_progress_payload(uid),
+            "practice_mode": bool(practice),
         })
 
 async def api_timeout(request):
@@ -5304,18 +5322,22 @@ async def api_timeout(request):
         return web.json_response({"error": "not_yet", "remaining": remaining}, status=400)
     q = g["current_q"]
     money = m_money_at(g["qindex"])
-    m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
-                money, g["correct_count"], False)
+    practice = g.get("no_score")
+    if not practice:
+        m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
+                    money, g["correct_count"], False)
     pts = 0
-    if money >= 32000: pts = 30
-    elif money >= 1000: pts = 15
-    if pts > 0:
-        add_points(uid, pts, "miniapp millionaire timeout L" + str(g["level_index"]+1))
+    if not practice:
+        if money >= 32000: pts = 30
+        elif money >= 1000: pts = 15
+        if pts > 0:
+            add_points(uid, pts, "miniapp millionaire timeout L" + str(g["level_index"]+1))
     g["active"] = False
     return web.json_response({
         "outcome": "timeout", "won_money": money,
         "correct_choice": q["correct"], "explanation": q.get("explanation_fa", ""),
         "points": pts, "progress": m_api_progress_payload(uid),
+        "practice_mode": bool(practice),
     })
 
 def m_lifelines_state(g):
@@ -5427,20 +5449,24 @@ async def api_walk(request):
     if not g or not g.get("active"):
         return web.json_response({"error": "no_active_game"}, status=400)
     money = MILLIONAIRE_LADDER[g["qindex"] - 1] if g["qindex"] > 0 else 0
-    m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
-                money, g["correct_count"], False)
+    practice = g.get("no_score")
+    if not practice:
+        m_save_game(uid, g["level_index"], MILLIONAIRE_LEAGUE[g["level_index"]],
+                    money, g["correct_count"], False)
     pts = 0
-    if money >= 32000: pts = 30
-    elif money >= 1000: pts = 15
-    elif money > 0: pts = 5
-    if pts > 0:
-        add_points(uid, pts, "miniapp millionaire walk L" + str(g["level_index"]+1))
+    if not practice:
+        if money >= 32000: pts = 30
+        elif money >= 1000: pts = 15
+        elif money > 0: pts = 5
+        if pts > 0:
+            add_points(uid, pts, "miniapp millionaire walk L" + str(g["level_index"]+1))
     g["active"] = False
     return web.json_response({
         "outcome": "walk", "won_money": money, "points": pts,
         "correct_choice": g["current_q"]["correct"] if g.get("current_q") else None,
         "explanation": g["current_q"].get("explanation_fa", "") if g.get("current_q") else "",
         "progress": m_api_progress_payload(uid),
+        "practice_mode": bool(practice),
     })
 
 async def api_leaderboard(request):

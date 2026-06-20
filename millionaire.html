@@ -464,6 +464,20 @@ async function startGame(){
     ladder=res.ladder;
     currentLifelines=res.lifelines;
     if(res.seconds) QUESTION_SECONDS=res.seconds;
+    // حالت تمرین: همه‌ی فصل‌ها فتح شدن
+    var pb=document.getElementById('practice-banner');
+    if(res.all_done){
+      if(!pb){
+        pb=document.createElement('div');
+        pb.id='practice-banner';
+        pb.style.cssText='background:linear-gradient(90deg,#2ba558,#1f7d42);color:#fff;'+
+          'padding:10px 12px;border-radius:10px;margin-bottom:10px;font-size:13px;text-align:center;line-height:1.7;';
+        pb.innerHTML='🎉 آفرین! همه‌ی فصل‌ها رو فتح کردی!<br>از این به بعد می‌تونی بازی کنی، ولی <b>بدون امتیاز</b> (حالت تمرین).';
+        var gs=document.getElementById('screen-game');
+        gs.insertBefore(pb, gs.firstChild);
+      }
+      pb.style.display='';
+    } else if(pb){ pb.style.display='none'; }
     renderQuestion(res.question, res.qindex);
   }catch(e){
     show('screen-start');
@@ -482,7 +496,9 @@ async function loadStartInfo(){
       '<div class="info-row"><span>فصل فعلی</span><span>'+p.level_label+'</span></div>'+
       '<div class="info-row"><span>فصل‌های فتح‌شده</span><span>'+faNum(p.completed_levels)+'/'+faNum(p.total_levels)+'</span></div>'+
       '<div class="info-row"><span>رکورد</span><span>'+money(p.best_money)+'</span></div>'+
-      '<div class="info-row"><span>کمک‌ها</span><span>۵۰:۵۰ · تعویض سوال</span></div>';
+      '<div class="info-row"><span>کمک‌ها</span><span>۵۰:۵۰ · تعویض سوال</span></div>'+
+      ((p.completed_levels>=p.total_levels)?
+        '<div style="margin-top:10px;background:#1f7d42;color:#fff;padding:9px;border-radius:9px;font-size:12.5px;text-align:center;line-height:1.7;">🎉 همه‌ی فصل‌ها رو فتح کردی! می‌تونی برای تمرین بازی کنی، ولی دیگه امتیاز نمی‌گیری.</div>':'');
     document.getElementById('btn-play').style.display='';
     document.getElementById('btn-lb1').style.display='';
   }catch(e){
