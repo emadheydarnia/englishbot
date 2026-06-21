@@ -230,9 +230,11 @@ def init_db():
                 chapter_index INTEGER DEFAULT 0,
                 completed_chapters INTEGER DEFAULT 0,
                 best_money INTEGER DEFAULT 0,
+                session TEXT,
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        cur.execute("ALTER TABLE vm_progress ADD COLUMN IF NOT EXISTS session TEXT")
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         print("DB init error: " + str(e))
@@ -6071,6 +6073,63 @@ async def api_td_index(request):
 
 VM_API_GAMES = {}
 
+def vm_session_save(uid, g):
+    """state بازی رو هم در حافظه هم در دیتابیس ذخیره می‌کنه (مقاوم در برابر ری‌استارت)."""
+    VM_API_GAMES[uid] = g
+    try:
+        import json as _json
+        # فقط چیزهای لازم برای ادامه (questions سبک‌سازی می‌شه)
+        payload = {
+            "chapter_index": g["chapter_index"], "qindex": g["qindex"],
+            "questions": g["questions"], "correct_count": g["correct_count"],
+            "shuffled": g["shuffled"], "correct_index": g["correct_index"],
+            "no_score": g.get("no_score", False),
+        }
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("UPDATE vm_progress SET session=%s WHERE telegram_id=%s",
+                    (_json.dumps(payload), uid))
+        if cur.rowcount == 0:
+            cur.execute("""INSERT INTO vm_progress (telegram_id, chapter_index, completed_chapters, best_money, session)
+                           VALUES (%s,0,0,0,%s)""", (uid, _json.dumps(payload)))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        logger.error("vm_session_save error: " + str(e))
+
+def vm_session_load(uid):
+    """بازی رو از حافظه می‌خونه؛ اگه نبود (ری‌استارت)، از دیتابیس بازسازی می‌کنه."""
+    g = VM_API_GAMES.get(uid)
+    if g and g.get("current_q"):
+        return g
+    try:
+        import json as _json
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT session FROM vm_progress WHERE telegram_id=%s", (uid,))
+        row = cur.fetchone(); cur.close(); conn.close()
+        if row and row[0]:
+            p = _json.loads(row[0])
+            qi = p["qindex"]
+            qs = p["questions"]
+            if qi < len(qs):
+                g = {"chapter_index": p["chapter_index"], "qindex": qi,
+                     "questions": qs, "correct_count": p["correct_count"],
+                     "current_q": qs[qi], "shuffled": p["shuffled"],
+                     "correct_index": p["correct_index"], "no_score": p.get("no_score", False),
+                     "q_started_at": None}
+                VM_API_GAMES[uid] = g
+                return g
+    except Exception as e:
+        logger.error("vm_session_load error: " + str(e))
+    return None
+
+def vm_session_clear(uid):
+    VM_API_GAMES.pop(uid, None)
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("UPDATE vm_progress SET session=NULL WHERE telegram_id=%s", (uid,))
+        conn.commit(); cur.close(); conn.close()
+    except Exception:
+        pass
+
 def vm_shuffle_options(q):
     """گزینه‌ها رو بُر می‌زنه و جواب درست رو پیدا می‌کنه. خروجی: (options_list, correct_index)."""
     import random as _r
@@ -6138,10 +6197,10 @@ async def api_vm_start(request):
     g = {"chapter_index": ci, "qindex": 0, "questions": qs, "correct_count": 0,
          "current_q": None, "shuffled": [], "correct_index": -1,
          "no_score": all_done, "q_started_at": None}
-    VM_API_GAMES[uid] = g
     g["current_q"] = qs[0]
     g["shuffled"], g["correct_index"] = vm_shuffle_options(qs[0])
     import time as _t; g["q_started_at"] = _t.time()
+    vm_session_save(uid, g)
     return web.json_response({
         "question": vm_public_question(g), "qindex": 0,
         "ladder": vm_api_ladder(), "progress": vm_progress_payload(uid),
@@ -6156,7 +6215,7 @@ async def api_vm_answer(request):
     if not user:
         return web.json_response({"error": "auth_failed"}, status=401)
     uid = user["id"]
-    g = VM_API_GAMES.get(uid)
+    g = vm_session_load(uid)
     if not g or not g.get("current_q"):
         return web.json_response({"error": "no_game"}, status=409)
     try:
@@ -6179,6 +6238,7 @@ async def api_vm_answer(request):
                 pts = 100
                 add_points(uid, pts, "Vocab Millionaire win Ch" + str(g["chapter_index"]+1))
             g["current_q"] = None
+            vm_session_clear(uid)
             return web.json_response({"correct": True, "correct_index": correct_index,
                 "outcome": "win", "won_money": money, "points": pts,
                 "progress": vm_progress_payload(uid), "practice_mode": bool(practice)})
@@ -6188,6 +6248,7 @@ async def api_vm_answer(request):
         g["current_q"] = nq
         g["shuffled"], g["correct_index"] = vm_shuffle_options(nq)
         g["q_started_at"] = _t.time()
+        vm_session_save(uid, g)
         return web.json_response({"correct": True, "correct_index": correct_index,
             "outcome": "continue", "question": vm_public_question(g),
             "qindex": g["qindex"], "money": VM_LADDER[g["qindex"]-1]})
@@ -6202,6 +6263,7 @@ async def api_vm_answer(request):
             if pts > 0:
                 add_points(uid, pts, "Vocab Millionaire lose Ch" + str(g["chapter_index"]+1))
         g["current_q"] = None
+        vm_session_clear(uid)
         return web.json_response({"correct": False, "correct_index": correct_index,
             "outcome": "lose", "won_money": money, "points": pts,
             "progress": vm_progress_payload(uid), "practice_mode": bool(practice)})
