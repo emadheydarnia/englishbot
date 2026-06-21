@@ -207,6 +207,21 @@ def init_db():
                 td_points INTEGER DEFAULT 0
             )
         """)
+        # ── Vocabulary Millionaire: بانک سوال (جمله فارسی + ۴ گزینه انگلیسی) ──
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS vm_questions (
+                id SERIAL PRIMARY KEY,
+                chapter INTEGER,
+                word VARCHAR(120),
+                fa TEXT,
+                correct TEXT,
+                opt2 TEXT,
+                opt3 TEXT,
+                opt4 TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_vm_chapter ON vm_questions(chapter)")
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         print("DB init error: " + str(e))
@@ -4493,6 +4508,159 @@ def m_bank_count_by_level():
         return {}
 
 # ══════════════════════════════════════════════════════════════════════════════
+# ── VOCABULARY MILLIONAIRE — Question Bank ────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+VM_CHAPTER_NAMES = {1:"Holiday",2:"Relationship",3:"Technology",4:"Sports",5:"Food",
+    6:"Education",7:"Work",8:"Health",9:"Books and Films",10:"Accommodation",
+    11:"Clothes and Fashion",12:"Personality",13:"Business",14:"Physical Appearance",
+    15:"Town and City",16:"Music",17:"Weather",18:"Shopping",19:"Environment",
+    20:"Advertising",21:"Government"}
+VM_TOTAL_CHAPTERS = 21
+VM_TARGET_PER_CHAPTER = 30
+VM_QUESTIONS_PER_GAME = 12  # مثل Millionaire گرامری
+
+def vm_extract_words(chapter):
+    """لغات یه فصل رو از prompt همون فصل توی AI_TOPICS استخراج می‌کنه."""
+    import re
+    key = f"ielts_ch{chapter:02d}"
+    topic = AI_TOPICS.get(key, {})
+    prompt = topic.get("prompt", "")
+    if not prompt:
+        return []
+    m = re.search(r'لیست لغات.*?:(.*?)- هر بار', prompt, re.S)
+    if not m:
+        return []
+    words = [w.strip()[2:].strip() for w in m.group(1).split("\n") if w.strip().startswith("- ")]
+    return [w for w in words if w]
+
+def vm_bank_count_by_chapter():
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT chapter, COUNT(*) FROM vm_questions GROUP BY chapter")
+        out = {c: 0 for c in range(1, VM_TOTAL_CHAPTERS + 1)}
+        for ch, c in cur.fetchall():
+            out[ch] = c
+        cur.close(); conn.close()
+        return out
+    except Exception as e:
+        print("vm_bank_count error: " + str(e))
+        return {c: 0 for c in range(1, VM_TOTAL_CHAPTERS + 1)}
+
+def vm_pick_questions(chapter, n=VM_QUESTIONS_PER_GAME):
+    """n سوال تصادفی از یه فصل (عدم تکرار در یک بازی)."""
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT id, chapter, word, fa, correct, opt2, opt3, opt4
+            FROM vm_questions WHERE chapter=%s ORDER BY RANDOM() LIMIT %s
+        """, (chapter, n))
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print("vm_pick_questions error: " + str(e))
+        return []
+
+def vm_bootstrap_bank(max_seconds=0):
+    """
+    یک‌بار بانک سوال Vocabulary Millionaire رو می‌سازه (۲۱ فصل × ۳۰ سوال).
+    با متغیر VM_BOOTSTRAP=true موقع startup اجرا می‌شه. مقاوم در برابر قطعی (ادامه از همون‌جا).
+    """
+    import time as _t, json as _json
+    start = _t.time()
+    counts = vm_bank_count_by_chapter()
+    total_now = sum(counts.values())
+    if total_now >= VM_TARGET_PER_CHAPTER * VM_TOTAL_CHAPTERS:
+        logger.info("VM bank already full (%d). Skipping." % total_now)
+        return
+    logger.info("VM bank bootstrap starting (have %d)..." % total_now)
+    try:
+        conn = get_db()
+    except Exception as e:
+        logger.error("vm bootstrap: DB connect failed: " + str(e))
+        return
+
+    for ch in range(1, VM_TOTAL_CHAPTERS + 1):
+        words = vm_extract_words(ch)
+        if not words:
+            logger.warning("VM ch%d: no words extracted, skipping." % ch)
+            continue
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM vm_questions WHERE chapter=%s", (ch,))
+        have = cur.fetchone()[0]; cur.close()
+        need = VM_TARGET_PER_CHAPTER - have
+        attempts = 0
+        consecutive_fails = 0
+        ch_name = VM_CHAPTER_NAMES.get(ch, "")
+        while need > 0 and attempts < 120:
+            if max_seconds and (_t.time() - start) > max_seconds:
+                logger.warning("vm bootstrap: time budget reached.")
+                conn.close(); return
+            attempts += 1
+            ask = min(6, need + 1)
+            wlist = ", ".join(words)
+            prompt = (
+                "You are creating multiple-choice questions for a vocabulary game based on the "
+                "LWL IELTS book, Chapter " + str(ch) + " (" + ch_name + ").\n"
+                "ONLY use these exact chapter words/phrases (do NOT invent others):\n" + wlist + "\n\n"
+                "Generate " + str(ask) + " DISTINCT questions. For each:\n"
+                "1. Pick one chapter word/phrase.\n"
+                "2. Write a SHORT natural Persian sentence that uses that word's meaning.\n"
+                "3. Give the CORRECT English translation of the sentence (using the chapter word).\n"
+                "4. Give THREE wrong English options that are VERY CLOSE to the correct one — "
+                "differing mainly in PREPOSITION or COLLOCATION (e.g. 'on holiday' vs 'in/at/to holiday'). "
+                "The wrong options must look plausible but be grammatically/idiomatically wrong.\n"
+                "Rules:\n"
+                "- Do NOT use any person's name in the sentences.\n"
+                "- Keep all four options similar length and structure so only the subtle difference stands out.\n"
+                "- Output ONLY a JSON array. Each item: "
+                '{"word":"...","fa":"...","correct":"...","wrong":["...","...","..."]}\n'
+            )
+            resp = None
+            try:
+                resp = call_gemini_api([], prompt)
+            except Exception as e:
+                logger.error("vm bootstrap gemini error (continuing): " + str(e))
+                resp = None
+            if not resp:
+                consecutive_fails += 1
+                if consecutive_fails >= 8:
+                    logger.warning("vm bootstrap: too many fails on ch%d, moving on." % ch)
+                    break
+                _t.sleep(2); continue
+            consecutive_fails = 0
+            txt = resp.strip()
+            if "```" in txt:
+                parts = txt.split("```")
+                if len(parts) >= 2:
+                    txt = parts[1].replace("json", "", 1).strip()
+            try:
+                s = txt.find("["); e = txt.rfind("]")
+                items = _json.loads(txt[s:e+1]) if s >= 0 and e > s else []
+            except Exception:
+                items = []
+            cur = conn.cursor()
+            added = 0
+            for it in items:
+                fa = str(it.get("fa", "")).strip()
+                correct = str(it.get("correct", "")).strip()
+                wrong = it.get("wrong", [])
+                word = str(it.get("word", "")).strip()
+                if not fa or not correct or not isinstance(wrong, list) or len(wrong) < 3:
+                    continue
+                cur.execute("""
+                    INSERT INTO vm_questions (chapter, word, fa, correct, opt2, opt3, opt4)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s)
+                """, (ch, word, fa, correct, str(wrong[0]).strip(), str(wrong[1]).strip(), str(wrong[2]).strip()))
+                added += 1; need -= 1
+            conn.commit(); cur.close()
+            logger.info("VM ch%d: +%d (need %d more)" % (ch, added, max(0, need)))
+            _t.sleep(1.5)
+    conn.close()
+    logger.info("VM bank bootstrap finished.")
+
+# ══════════════════════════════════════════════════════════════════════════════
 # ── TRANSLATION DUEL — Question Bank ──────────────────────────────────────────
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -6083,6 +6251,24 @@ async def tdstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
+async def vmstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """وضعیت بانک سوال Vocabulary Millionaire — فقط معلم."""
+    if update.effective_user.id != TEACHER_ID:
+        await update.message.reply_text("🚫 Teacher only.")
+        return
+    counts = vm_bank_count_by_chapter()
+    total = sum(counts.values())
+    lines = ["📊 Millionaire (voc) — بانک سوال", "━" * 20]
+    for ch in range(1, VM_TOTAL_CHAPTERS + 1):
+        have = counts.get(ch, 0)
+        mark = "✅" if have >= VM_TARGET_PER_CHAPTER else "🟡"
+        nm = VM_CHAPTER_NAMES.get(ch, "")
+        lines.append(f"{mark} Ch{ch} {nm}: {have}/{VM_TARGET_PER_CHAPTER}")
+    lines.append("━" * 20)
+    lines.append(f"مجموع: {total}/{VM_TARGET_PER_CHAPTER * VM_TOTAL_CHAPTERS}")
+    await update.message.reply_text("\n".join(lines))
+
+
 async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """پیام همگانی به همه‌ی کاربرها — فقط معلم. روش: /broadcast متن پیام"""
     if update.effective_user.id != TEACHER_ID:
@@ -6233,6 +6419,12 @@ def main():
             td_bootstrap_bank()
         except Exception as e:
             logger.error("td bootstrap failed: " + str(e))
+    # پر کردن یک‌باره‌ی بانک Vocabulary Millionaire (با VM_BOOTSTRAP=true)
+    if os.environ.get("VM_BOOTSTRAP", "").lower() in ("1", "true", "yes"):
+        try:
+            vm_bootstrap_bank()
+        except Exception as e:
+            logger.error("vm bootstrap failed: " + str(e))
     app = Application.builder().token(BOT_TOKEN).post_init(_on_post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
@@ -6254,6 +6446,7 @@ def main():
     app.add_handler(CommandHandler("leitner", leitner_cmd))
     app.add_handler(CommandHandler("testreport", testreport_cmd))
     app.add_handler(CommandHandler("tdstats", tdstats_cmd))
+    app.add_handler(CommandHandler("vmstats", vmstats_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, champion_photo_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
