@@ -51,6 +51,11 @@
     <div class="txt"><div class="t">Translation Duel</div><div class="d">Challenge others — translate 12 sentences and beat your rival</div></div>
   </div>
 
+  <div class="choice" id="c-vocabm">
+    <div class="ico">💰</div>
+    <div class="txt"><div class="t">Millionaire (voc)</div><div class="d">Pick the right English translation — 21 vocabulary chapters</div></div>
+  </div>
+
   <div class="err" id="err"></div>
 
   <div class="brand">
@@ -71,6 +76,7 @@ const base = location.origin;
 document.getElementById('c-leitner').onclick = ()=>{ location.href = base + '/leitner'; };
 document.getElementById('c-millionaire').onclick = ()=>{ location.href = base + '/'; };
 document.getElementById('c-duel').onclick = ()=>{ location.href = base + '/duel'; };
+document.getElementById('c-vocabm').onclick = ()=>{ location.href = base + '/vocabmillionaire'; };
 </script>
 </body>
 </html>

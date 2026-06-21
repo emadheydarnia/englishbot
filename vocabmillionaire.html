@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Millionaire (voc) — Emad English Lab</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  *{ margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  :root{
+    --bg:#0a1020; --panel:#13203b; --panel2:#1c2d4f; --line:#2a3e63;
+    --gold:#ffd84d; --green:#36c46a; --red:#e25563; --blue:#4f8cff;
+    --text:#eaf1ff; --dim:#9fb3d4;
+  }
+  html,body{ height:100%; }
+  body{ font-family:'Segoe UI',system-ui,sans-serif; background:
+    radial-gradient(circle at 50% 0%, #1a2c52, #0a1020 60%); color:var(--text); overflow-x:hidden; }
+  #app{ max-width:480px; margin:0 auto; min-height:100vh; display:flex; flex-direction:column; }
+  header{ padding:16px; text-align:center; border-bottom:1px solid var(--line); }
+  header h1{ font-size:20px; color:var(--gold); }
+  header .sub{ font-size:12px; color:var(--dim); margin-top:3px; }
+  .screen{ flex:1; padding:16px; display:none; }
+  .screen.active{ display:block; }
+  .btn{ background:linear-gradient(#ffe072,#ffc928); color:#3a2e00; border:none;
+    border-radius:12px; padding:15px; font-size:16px; font-weight:800; cursor:pointer;
+    width:100%; margin-top:12px; transition:transform .1s; font-family:inherit; }
+  .btn:active{ transform:scale(.98); }
+  .btn.sec{ background:var(--panel2); color:var(--text); border:1px solid var(--line); }
+  .card{ background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:12px; }
+  .info-row{ display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line); font-size:14px; }
+  .info-row:last-child{ border-bottom:none; }
+  .info-row span:first-child{ color:var(--dim); }
+  .msg{ text-align:center; color:var(--dim); font-size:13px; padding:24px 10px; line-height:1.8; }
+  .spinner{ width:34px; height:34px; border:3px solid var(--line); border-top-color:var(--gold);
+    border-radius:50%; animation:spin 1s linear infinite; margin:30px auto; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+
+  .play-top{ display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  .chap{ font-size:12px; color:var(--gold); background:var(--panel2); padding:4px 12px; border-radius:20px; }
+  .money-now{ font-size:13px; color:var(--green); font-weight:700; }
+  .timer{ width:38px; height:38px; border:3px solid var(--blue); border-radius:50%; display:flex;
+    align-items:center; justify-content:center; font-weight:700; font-size:14px; }
+  .timer.warn{ border-color:var(--gold); color:var(--gold); }
+  .timer.danger{ border-color:var(--red); color:#fff; background:var(--red); animation:pulse .6s infinite; }
+  @keyframes pulse{ 50%{ transform:scale(1.12); } }
+  .q-fa{ background:linear-gradient(160deg,#1c2d4f,#13203b); border:1px solid var(--line);
+    border-radius:16px; padding:22px 18px; font-size:19px; text-align:center; direction:rtl;
+    line-height:1.8; margin-bottom:16px; min-height:80px; display:flex; align-items:center; justify-content:center; }
+  .opt{ background:var(--panel); border:2px solid var(--line); border-radius:12px; padding:14px 16px;
+    margin-bottom:10px; font-size:15px; cursor:pointer; direction:ltr; transition:all .15s; display:flex; gap:10px; align-items:center; }
+  .opt:active{ transform:scale(.99); }
+  .opt .lab{ width:26px; height:26px; border-radius:50%; background:var(--panel2); color:var(--gold);
+    display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; flex-shrink:0; }
+  .opt.correct{ border-color:var(--green); background:rgba(54,196,106,.15); }
+  .opt.wrong{ border-color:var(--red); background:rgba(226,85,99,.15); }
+  .opt.disabled{ pointer-events:none; opacity:.85; }
+  .ladder{ margin-top:6px; }
+  .ladder-row{ display:flex; justify-content:space-between; padding:5px 12px; border-radius:8px; font-size:13px; color:var(--dim); }
+  .ladder-row.cur{ background:var(--gold); color:#3a2e00; font-weight:800; }
+  .ladder-row.safe span:last-child{ color:var(--green); }
+  .ladder-row.passed{ color:#5d7099; }
+  .result-big{ text-align:center; padding:18px 0; }
+  .result-big .emoji{ font-size:60px; }
+  .result-big .verdict{ font-size:24px; font-weight:800; margin-top:6px; }
+  .result-big .money{ font-size:30px; font-weight:800; color:var(--gold); margin-top:8px; }
+  .practice-note{ background:linear-gradient(90deg,#2ba558,#1f7d42); color:#fff; padding:10px 12px;
+    border-radius:10px; margin-bottom:12px; font-size:12.5px; text-align:center; line-height:1.7; direction:rtl; }
+  .brand{ margin-top:auto; padding:14px; text-align:center; border-top:1px solid var(--line); }
+  .brand-title{ font-size:13px; font-weight:700; color:var(--gold); margin-bottom:6px; }
+  .brand-link{ display:block; font-size:12px; color:#9ec3f5; text-decoration:none; padding:3px 0; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>💰 Millionaire (voc)</h1>
+    <div class="sub">معنی فارسی رو بخون، ترجمه‌ی درست انگلیسی رو انتخاب کن</div>
+  </header>
+
+  <!-- START -->
+  <div class="screen active" id="screen-start">
+    <div class="card" id="start-info"><div class="spinner"></div></div>
+    <button class="btn" onclick="startGame()">🎮 شروع بازی</button>
+    <div class="brand">
+      <div class="brand-title">Emad English Lab</div>
+      <a class="brand-link" href="https://t.me/lwlheydarnia" target="_blank">📢 Channel: @emadenglishlab</a>
+      <a class="brand-link" href="https://t.me/emadenglishbot" target="_blank">🤖 Bot: @emadenglishbot</a>
+    </div>
+  </div>
+
+  <!-- GAME -->
+  <div class="screen" id="screen-game">
+    <div class="play-top">
+      <span class="chap" id="g-chap">Ch1</span>
+      <span class="money-now" id="g-money">€0</span>
+      <span class="timer" id="g-timer">30</span>
+    </div>
+    <div class="q-fa" id="g-fa">...</div>
+    <div id="g-options"></div>
+    <div class="ladder card" id="g-ladder" style="margin-top:14px;"></div>
+  </div>
+
+  <!-- RESULT -->
+  <div class="screen" id="screen-result">
+    <div class="result-big">
+      <div class="emoji" id="r-emoji">🏆</div>
+      <div class="verdict" id="r-verdict">فصل رو فتح کردی!</div>
+      <div class="money" id="r-money">€0</div>
+    </div>
+    <div id="r-points" style="text-align:center; color:var(--green); font-size:15px; margin-bottom:10px;"></div>
+    <button class="btn" onclick="goStart()">▶️ ادامه</button>
+  </div>
+</div>
+
+<script>
+const tg = window.Telegram ? window.Telegram.WebApp : null;
+if(tg){ tg.ready(); tg.expand(); }
+const INIT = tg ? tg.initData : "";
+
+let ladder=[], qindex=0, timerId=null, timeLeft=30, QSEC=30, answered=false, practice=false;
+
+async function api(path, body){
+  const res=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(Object.assign({initData:INIT}, body||{}))});
+  if(!res.ok){ const e=await res.json().catch(()=>({error:'http_'+res.status})); throw new Error(e.error||'error'); }
+  return res.json();
+}
+function show(id){ document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  document.getElementById(id).classList.add('active'); }
+function esc(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function money(n){ return '€'+Number(n).toLocaleString('en-US'); }
+
+async function loadStart(){
+  const el=document.getElementById('start-info');
+  el.innerHTML='<div class="info-row"><span>بازی</span><span>۲۱ فصل واژگان</span></div>'+
+    '<div class="info-row"><span>سوال هر فصل</span><span>۱۲ سوال</span></div>'+
+    '<div class="info-row"><span>هدف</span><span>ترجمه‌ی درست رو انتخاب کن</span></div>';
+}
+
+async function startGame(){
+  show('screen-game');
+  document.getElementById('g-fa').textContent='در حال آماده‌سازی...';
+  document.getElementById('g-options').innerHTML='';
+  try{
+    const r=await api('/api/vm/start',{});
+    ladder=r.ladder; QSEC=r.seconds||30;
+    practice=r.all_done;
+    renderQ(r.question, r.qindex);
+  }catch(e){
+    show('screen-start');
+    if(e.message==='persian_only'){
+      document.getElementById('start-info').innerHTML=
+        '<div class="msg">🌍 This game is available for Persian students only.<br><br>این بازی فقط برای زبان‌آموزان فارسی‌زبانه.</div>';
+      document.querySelector('#screen-start .btn').style.display='none';
+      return;
+    }
+    alert(e.message==='bank_not_ready'?'بانک سوالات هنوز آماده نیست.':'خطا: '+e.message);
+  }
+}
+
+function renderQ(q, qi){
+  answered=false; qindex=qi;
+  document.getElementById('g-chap').textContent='Ch'+q.chapter+' '+q.chapter_name;
+  document.getElementById('g-money').textContent=qi>0?money(ladder[qi-1].money):'€0';
+  document.getElementById('g-fa').textContent=q.fa;
+  const oc=document.getElementById('g-options'); oc.innerHTML='';
+  const labels=['A','B','C','D'];
+  q.options.forEach((opt,i)=>{
+    const d=document.createElement('div');
+    d.className='opt'; d.innerHTML='<span class="lab">'+labels[i]+'</span><span>'+esc(opt)+'</span>';
+    d.onclick=()=>chooseAnswer(i, d);
+    oc.appendChild(d);
+  });
+  renderLadder();
+  startTimer();
+}
+function renderLadder(){
+  const el=document.getElementById('g-ladder');
+  el.innerHTML=ladder.slice().reverse().map(r=>{
+    let cls='ladder-row';
+    if(r.q-1===qindex) cls+=' cur';
+    else if(r.q-1<qindex) cls+=' passed';
+    if(r.safe) cls+=' safe';
+    return '<div class="'+cls+'"><span>Q'+r.q+(r.safe?' 🔒':'')+'</span><span>'+money(r.money)+'</span></div>';
+  }).join('');
+}
+function startTimer(){
+  stopTimer(); timeLeft=QSEC; updTimer();
+  timerId=setInterval(()=>{ timeLeft--; updTimer();
+    if(timeLeft<=0){ stopTimer(); autoFail(); } },1000);
+}
+function stopTimer(){ if(timerId){ clearInterval(timerId); timerId=null; } }
+function updTimer(){
+  const el=document.getElementById('g-timer'); el.textContent=timeLeft;
+  el.classList.remove('warn','danger');
+  if(timeLeft<=5) el.classList.add('danger'); else if(timeLeft<=10) el.classList.add('warn');
+}
+async function autoFail(){
+  // مثل انتخاب غلط (می‌فرستیم choice=-1)
+  if(answered) return; answered=true;
+  try{ const r=await api('/api/vm/answer',{choice:-1}); handleResult(r, null); }catch(e){}
+}
+async function chooseAnswer(i, el){
+  if(answered) return; answered=true; stopTimer();
+  document.querySelectorAll('.opt').forEach(o=>o.classList.add('disabled'));
+  try{
+    const r=await api('/api/vm/answer',{choice:i});
+    handleResult(r, el);
+  }catch(e){ alert('خطا: '+e.message); answered=false;
+    document.querySelectorAll('.opt').forEach(o=>o.classList.remove('disabled')); }
+}
+function handleResult(r, el){
+  const opts=document.querySelectorAll('.opt');
+  // درست رو سبز کن
+  if(typeof r.correct_index==='number' && opts[r.correct_index]) opts[r.correct_index].classList.add('correct');
+  if(!r.correct && el) el.classList.add('wrong');
+  setTimeout(()=>{
+    if(r.outcome==='continue'){ renderQ(r.question, r.qindex); }
+    else { showResult(r); }
+  }, 1100);
+}
+function showResult(r){
+  stopTimer();
+  show('screen-result');
+  const emoji=document.getElementById('r-emoji'), verdict=document.getElementById('r-verdict');
+  if(r.outcome==='win'){ emoji.textContent='🏆'; verdict.textContent='فصل رو فتح کردی! 🎉'; verdict.style.color='var(--green)'; }
+  else { emoji.textContent='😅'; verdict.textContent='باختی'; verdict.style.color='var(--red)'; }
+  document.getElementById('r-money').textContent=money(r.won_money||0);
+  const pe=document.getElementById('r-points');
+  if(r.practice_mode){ pe.innerHTML='🎯 حالت تمرین — بدون امتیاز'; pe.style.color='var(--gold)'; }
+  else if(r.points>0){ pe.innerHTML='+'+r.points+' امتیاز در جدول 🎖️'; pe.style.color='var(--green)'; }
+  else { pe.innerHTML=''; }
+}
+function goStart(){ show('screen-start'); loadStart(); }
+
+// boot
+if(!INIT){ document.getElementById('start-info').innerHTML='<div class="msg" style="color:var(--red)">لطفاً از داخل تلگرام باز کن.</div>'; }
+else { loadStart(); }
+</script>
+</body>
+</html>

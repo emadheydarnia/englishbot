@@ -21,6 +21,7 @@ MINIAPP_URL = os.environ.get("MINIAPP_URL", "")
 # آدرس Mini App جعبه لایتنر (روی همون سرور، مسیر /leitner)
 LEITNER_URL = (MINIAPP_URL.rstrip("/") + "/leitner") if MINIAPP_URL else ""
 TD_URL = (MINIAPP_URL.rstrip("/") + "/duel") if MINIAPP_URL else ""
+VM_URL = (MINIAPP_URL.rstrip("/") + "/vocabmillionaire") if MINIAPP_URL else ""
 TEACHER_ID = int(os.environ.get("TEACHER_ID", "0"))
 EXAM_TIME_MINUTES = int(os.environ.get("EXAM_TIME_MINUTES", "30"))
 import requests
@@ -222,6 +223,16 @@ def init_db():
             )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_vm_chapter ON vm_questions(chapter)")
+        # ── Vocabulary Millionaire: پیشرفت بازیکن (تا کدوم فصل فتح شده) ──
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS vm_progress (
+                telegram_id BIGINT PRIMARY KEY,
+                chapter_index INTEGER DEFAULT 0,
+                completed_chapters INTEGER DEFAULT 0,
+                best_money INTEGER DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         print("DB init error: " + str(e))
@@ -4516,8 +4527,50 @@ VM_CHAPTER_NAMES = {1:"Holiday",2:"Relationship",3:"Technology",4:"Sports",5:"Fo
     15:"Town and City",16:"Music",17:"Weather",18:"Shopping",19:"Environment",
     20:"Advertising",21:"Government"}
 VM_TOTAL_CHAPTERS = 21
-VM_TARGET_PER_CHAPTER = 30
+VM_TARGET_PER_CHAPTER = 20
 VM_QUESTIONS_PER_GAME = 12  # مثل Millionaire گرامری
+# نردبان پول (۱۲ پله)
+VM_LADDER = [100, 200, 300, 500, 1000, 2000, 4000, 8000, 16000, 32000, 64000, 125000]
+VM_SAFE = {3: 500, 7: 8000}   # بعد از این indexها پول امن می‌شه
+VM_SECONDS = 30
+
+def vm_get_progress(telegram_id):
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT chapter_index, completed_chapters, best_money FROM vm_progress WHERE telegram_id=%s", (telegram_id,))
+        row = cur.fetchone(); cur.close(); conn.close()
+        if row:
+            return dict(row)
+        return {"chapter_index": 0, "completed_chapters": 0, "best_money": 0}
+    except Exception as e:
+        print("vm_get_progress error: " + str(e))
+        return {"chapter_index": 0, "completed_chapters": 0, "best_money": 0}
+
+def vm_save_progress(telegram_id, chapter_index, completed, best_money, won_chapter):
+    """ذخیره‌ی پیشرفت. اگه فصل فتح شد، chapter_index و completed جلو می‌ره."""
+    try:
+        cur_prog = vm_get_progress(telegram_id)
+        new_ci = cur_prog["chapter_index"]
+        new_comp = cur_prog["completed_chapters"]
+        new_best = max(cur_prog["best_money"], best_money)
+        if won_chapter:
+            new_ci = max(new_ci, chapter_index + 1)
+            new_comp = max(new_comp, chapter_index + 1)
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO vm_progress (telegram_id, chapter_index, completed_chapters, best_money, updated_at)
+            VALUES (%s,%s,%s,%s,NOW())
+            ON CONFLICT (telegram_id) DO UPDATE SET
+                chapter_index=EXCLUDED.chapter_index,
+                completed_chapters=EXCLUDED.completed_chapters,
+                best_money=EXCLUDED.best_money,
+                updated_at=NOW()
+        """, (telegram_id, new_ci, new_comp, new_best))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        print("vm_save_progress error: " + str(e))
 
 def vm_extract_words(chapter):
     """لغات یه فصل رو از prompt همون فصل توی AI_TOPICS استخراج می‌کنه."""
@@ -4598,7 +4651,7 @@ def vm_bootstrap_bank(max_seconds=0):
                 logger.warning("vm bootstrap: time budget reached.")
                 conn.close(); return
             attempts += 1
-            ask = min(6, need + 1)
+            ask = min(8, need + 1)
             wlist = ", ".join(words)
             prompt = (
                 "You are creating multiple-choice questions for a vocabulary game based on the "
@@ -4656,7 +4709,7 @@ def vm_bootstrap_bank(max_seconds=0):
                 added += 1; need -= 1
             conn.commit(); cur.close()
             logger.info("VM ch%d: +%d (need %d more)" % (ch, added, max(0, need)))
-            _t.sleep(1.5)
+            _t.sleep(0.8)
     conn.close()
     logger.info("VM bank bootstrap finished.")
 
@@ -5985,6 +6038,150 @@ async def api_td_index(request):
         return web.FileResponse(path)
     return web.Response(text="Translation Duel file not found.", status=404)
 
+VM_API_GAMES = {}
+
+def vm_shuffle_options(q):
+    """گزینه‌ها رو بُر می‌زنه و جواب درست رو پیدا می‌کنه. خروجی: (options_list, correct_index)."""
+    import random as _r
+    opts = [q["correct"], q["opt2"], q["opt3"], q["opt4"]]
+    idx = list(range(4))
+    _r.shuffle(idx)
+    shuffled = [opts[i] for i in idx]
+    correct_index = idx.index(0)  # 0 = جواب درست
+    return shuffled, correct_index
+
+def vm_public_question(g):
+    q = g["current_q"]
+    return {
+        "fa": q["fa"],
+        "options": g["shuffled"],
+        "chapter": g["chapter_index"] + 1,
+        "chapter_name": VM_CHAPTER_NAMES.get(g["chapter_index"] + 1, ""),
+    }
+
+def vm_api_ladder():
+    out = []
+    for i in range(VM_QUESTIONS_PER_GAME):
+        out.append({"q": i + 1, "money": VM_LADDER[i],
+                    "safe": i in VM_SAFE, "top": i == VM_QUESTIONS_PER_GAME - 1})
+    return out
+
+def vm_money_at(qindex_failed):
+    """پول امن وقتی روی سوال qindex (۰-based) باخت."""
+    safe = 0
+    for i in sorted(VM_SAFE.keys()):
+        if qindex_failed > i:
+            safe = VM_SAFE[i]
+    return safe
+
+def vm_progress_payload(uid):
+    p = vm_get_progress(uid)
+    ci = min(p["chapter_index"], VM_TOTAL_CHAPTERS - 1)
+    return {
+        "chapter_index": p["chapter_index"],
+        "chapter_label": "Ch" + str(ci + 1) + " " + VM_CHAPTER_NAMES.get(ci + 1, ""),
+        "completed_chapters": p["completed_chapters"],
+        "total_chapters": VM_TOTAL_CHAPTERS,
+        "best_money": p["best_money"],
+    }
+
+async def api_vm_start(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    if _td_is_german(uid):
+        return web.json_response({"error": "persian_only"}, status=403)
+    if not get_user(uid):
+        nm = (user.get("first_name","")+" "+user.get("last_name","")).strip() or "Player"
+        save_user(uid, nm, "MiniApp")
+    prog = vm_get_progress(uid)
+    raw_ci = prog["chapter_index"]
+    all_done = raw_ci >= VM_TOTAL_CHAPTERS
+    ci = min(raw_ci, VM_TOTAL_CHAPTERS - 1)
+    qs = vm_pick_questions(ci + 1, VM_QUESTIONS_PER_GAME)
+    if len(qs) < VM_QUESTIONS_PER_GAME:
+        return web.json_response({"error": "bank_not_ready"}, status=503)
+    g = {"chapter_index": ci, "qindex": 0, "questions": qs, "correct_count": 0,
+         "current_q": None, "shuffled": [], "correct_index": -1,
+         "no_score": all_done, "q_started_at": None}
+    VM_API_GAMES[uid] = g
+    g["current_q"] = qs[0]
+    g["shuffled"], g["correct_index"] = vm_shuffle_options(qs[0])
+    import time as _t; g["q_started_at"] = _t.time()
+    return web.json_response({
+        "question": vm_public_question(g), "qindex": 0,
+        "ladder": vm_api_ladder(), "progress": vm_progress_payload(uid),
+        "seconds": VM_SECONDS, "all_done": all_done, "practice_mode": all_done,
+    })
+
+async def api_vm_answer(request):
+    from aiohttp import web
+    import time as _t
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    g = VM_API_GAMES.get(uid)
+    if not g or not g.get("current_q"):
+        return web.json_response({"error": "no_game"}, status=409)
+    try:
+        choice = int(data.get("choice", -1))
+    except Exception:
+        choice = -1
+    correct_index = g["correct_index"]
+    q = g["current_q"]
+    practice = g.get("no_score")
+    is_correct = (choice == correct_index)
+
+    if is_correct:
+        g["correct_count"] += 1
+        # سوال آخر؟ → فتح فصل
+        if g["qindex"] >= VM_QUESTIONS_PER_GAME - 1:
+            money = VM_LADDER[-1]
+            pts = 0
+            if not practice:
+                vm_save_progress(uid, g["chapter_index"], g["completed_chapters"] if "completed_chapters" in g else 0, money, True)
+                pts = 100
+                add_points(uid, pts, "Vocab Millionaire win Ch" + str(g["chapter_index"]+1))
+            g["current_q"] = None
+            return web.json_response({"correct": True, "correct_index": correct_index,
+                "outcome": "win", "won_money": money, "points": pts,
+                "progress": vm_progress_payload(uid), "practice_mode": bool(practice)})
+        # سوال بعدی
+        g["qindex"] += 1
+        nq = g["questions"][g["qindex"]]
+        g["current_q"] = nq
+        g["shuffled"], g["correct_index"] = vm_shuffle_options(nq)
+        g["q_started_at"] = _t.time()
+        return web.json_response({"correct": True, "correct_index": correct_index,
+            "outcome": "continue", "question": vm_public_question(g),
+            "qindex": g["qindex"], "money": VM_LADDER[g["qindex"]-1]})
+    else:
+        # باخت → پول امن
+        money = vm_money_at(g["qindex"])
+        pts = 0
+        if not practice:
+            vm_save_progress(uid, g["chapter_index"], 0, money, False)
+            if money >= 8000: pts = 20
+            elif money >= 500: pts = 10
+            if pts > 0:
+                add_points(uid, pts, "Vocab Millionaire lose Ch" + str(g["chapter_index"]+1))
+        g["current_q"] = None
+        return web.json_response({"correct": False, "correct_index": correct_index,
+            "outcome": "lose", "won_money": money, "points": pts,
+            "progress": vm_progress_payload(uid), "practice_mode": bool(practice)})
+
+async def api_vm_index(request):
+    from aiohttp import web
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vocabmillionaire.html")
+    if os.path.exists(path):
+        return web.FileResponse(path)
+    return web.Response(text="Vocab Millionaire file not found.", status=404)
+
 async def start_web_server(app_ptb):
     """وب‌سرور aiohttp رو کنار bot بالا میاره."""
     try:
@@ -6020,6 +6217,9 @@ async def start_web_server(app_ptb):
     web_app.router.add_post("/api/td/result", api_td_result)
     web_app.router.add_post("/api/td/results", api_td_results)
     web_app.router.add_post("/api/td/leaderboard", api_td_leaderboard)
+    web_app.router.add_get("/vocabmillionaire", api_vm_index)
+    web_app.router.add_post("/api/vm/start", api_vm_start)
+    web_app.router.add_post("/api/vm/answer", api_vm_answer)
     runner = web.AppRunner(web_app)
     await runner.setup()
     port = int(os.environ.get("PORT", "8080"))
@@ -6115,6 +6315,23 @@ def lb_build_movements(rows, prev):
             lines.append(f"{name}: تازه‌وارد جدول در رتبه {new_rank} ({pts} امتیاز)")
     return "\n".join(lines)
 
+def lb_days_left_in_month():
+    """تعداد روزهای باقی‌مونده تا پایان ماه میلادی (شامل امروز نمی‌شه)."""
+    from datetime import date
+    import calendar as _cal
+    today = date.today()
+    last_day = _cal.monthrange(today.year, today.month)[1]
+    return last_day - today.day
+
+def lb_countdown_line():
+    """اگه ۱۰ روز یا کمتر مونده، خط روزشمار برمی‌گردونه، وگرنه None."""
+    days = lb_days_left_in_month()
+    if days <= 0:
+        return "\u200f🏁 امروز آخرین روز چالش این ماهه! قهرمان ماه امشب مشخص می‌شه! 🏆"
+    if days <= 10:
+        return "\u200f⏳ فقط " + str(days) + " روز تا پایان چالش این ماه و مشخص شدن قهرمان ماه باقی مونده! 🏆🔥"
+    return None
+
 async def daily_leaderboard_report(context: ContextTypes.DEFAULT_TYPE):
     """هر روز ساعت ۸ شب ایران: گزارش طنز روزانه‌ی جدول لیدربورد."""
     try:
@@ -6143,6 +6360,12 @@ async def daily_leaderboard_report(context: ContextTypes.DEFAULT_TYPE):
         if first_time:
             prompt += "\n\n(توجه: این اولین گزارشه و داده‌ی دیروز نداریم، پس فقط صدر جدول و وضعیت فعلی رو بامزه معرفی کن.)"
 
+        countdown = lb_countdown_line()
+        if countdown:
+            days_left = lb_days_left_in_month()
+            prompt += ("\n\n(نکته‌ی مهم: فقط " + str(days_left) + " روز تا پایان چالش این ماه و مشخص شدن قهرمان ماه مونده. "
+                       "یه جا توی گزارشت با هیجان به این روزشمار اشاره کن و بازیکن‌ها رو تشویق کن که فرصت کمه.)")
+
         loop = asyncio.get_event_loop()
         narration = None
         for attempt in range(2):  # حداکثر ۲ بار تلاش اگه ناقص اومد
@@ -6159,7 +6382,11 @@ async def daily_leaderboard_report(context: ContextTypes.DEFAULT_TYPE):
             # اگه Gemini در دسترس نبود، یه گزارش ساده بفرست
             narration = "📊 گزارش امروز آماده نشد، ولی رقابت داغه! فردا برمی‌گردیم. 🔥"
 
-        msg = "🎙️ گزارش روزِ جدول لیدربورد\n" + "━" * 20 + "\n\n" + fix_rtl(narration.strip())
+        msg = "🎙️ گزارش روزِ جدول لیدربورد\n" + "━" * 20 + "\n\n"
+        _cd = lb_countdown_line()
+        if _cd:
+            msg += _cd + "\n\n"
+        msg += fix_rtl(narration.strip())
 
         # مقصد: REPORT_CHAT_ID اگه تنظیم شده، وگرنه همه‌ی کاربرها
         target = os.environ.get("REPORT_CHAT_ID", "").strip()
@@ -6381,13 +6608,20 @@ async def testreport_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "لحن طنز بدون تخریب، لوس و چاپلوس نباش، روی سبقت‌ها تمرکز کن، اسم‌ها رو دقیق بنویس، آخرش یه جمله‌ی چالشی برای فردا.\n\n"
             "تغییرات امروز جدول:\n" + movements
         )
+        _cd_days = lb_days_left_in_month()
+        if _cd_days <= 10:
+            prompt += ("\n\n(نکته: فقط " + str(_cd_days) + " روز تا پایان چالش ماه مونده. یه جا با هیجان بهش اشاره کن.)")
         loop = asyncio.get_event_loop()
         narration = None
         for attempt in range(2):
             narration = await loop.run_in_executor(None, lambda: call_gemini_api([], prompt))
             if narration and not m_looks_truncated(narration):
                 break
-        msg = "🎙️ گزارش روزِ جدول لیدربورد (تست)\n" + "━" * 20 + "\n\n" + fix_rtl((narration or "خطا").strip())
+        msg = "🎙️ گزارش روزِ جدول لیدربورد (تست)\n" + "━" * 20 + "\n\n"
+        _cd = lb_countdown_line()
+        if _cd:
+            msg += _cd + "\n\n"
+        msg += fix_rtl((narration or "خطا").strip())
         await update.message.reply_text(msg)
     except Exception as e:
         await update.message.reply_text("خطا در ساخت گزارش: " + str(e))
