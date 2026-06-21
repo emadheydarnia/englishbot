@@ -4615,6 +4615,37 @@ def vm_pick_questions(chapter, n=VM_QUESTIONS_PER_GAME):
         print("vm_pick_questions error: " + str(e))
         return []
 
+def vm_import_from_file():
+    """
+    بانک سوال آماده رو از فایل vm_data.py مستقیم وارد دیتابیس می‌کنه.
+    سریع و بدون AI. با متغیر VM_IMPORT=true اجرا می‌شه.
+    """
+    try:
+        import vm_data
+    except Exception as e:
+        logger.error("vm_data.py not found: " + str(e))
+        return
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM vm_questions")
+        existing = cur.fetchone()[0]
+        if existing > 0:
+            logger.info("VM bank already has %d questions. Clearing and reimporting." % existing)
+            cur.execute("DELETE FROM vm_questions")
+        count = 0
+        for row in vm_data.VM_DATA:
+            ch, word, fa, correct, w1, w2, w3 = row
+            cur.execute("""
+                INSERT INTO vm_questions (chapter, word, fa, correct, opt2, opt3, opt4)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)
+            """, (ch, word, fa, correct, w1, w2, w3))
+            count += 1
+        conn.commit(); cur.close(); conn.close()
+        logger.info("VM bank imported: %d questions." % count)
+    except Exception as e:
+        logger.error("vm_import_from_file error: " + str(e))
+
 def vm_bootstrap_bank(max_seconds=0):
     """
     یک‌بار بانک سوال Vocabulary Millionaire رو می‌سازه (۲۱ فصل × ۳۰ سوال).
@@ -6175,6 +6206,37 @@ async def api_vm_answer(request):
             "outcome": "lose", "won_money": money, "points": pts,
             "progress": vm_progress_payload(uid), "practice_mode": bool(practice)})
 
+async def api_vm_leaderboard(request):
+    """لیدربورد هفتگی Vocabulary Millionaire — بر اساس امتیازهای این بازی در ۷ روز اخیر."""
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    try:
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT u.name, p.telegram_id, COALESCE(SUM(p.points),0) as pts
+            FROM points_log p
+            JOIN users u ON u.telegram_id = p.telegram_id
+            WHERE p.reason LIKE 'Vocab Millionaire%%'
+              AND p.created_at >= NOW() - INTERVAL '7 days'
+            GROUP BY p.telegram_id, u.name
+            HAVING COALESCE(SUM(p.points),0) > 0
+            ORDER BY pts DESC LIMIT 30
+        """)
+        rows = cur.fetchall(); cur.close(); conn.close()
+        lb = []
+        for i, r in enumerate(rows):
+            lb.append({"rank": i + 1, "name": r["name"], "points": r["pts"],
+                       "me": r["telegram_id"] == uid})
+        return web.json_response({"leaderboard": lb})
+    except Exception as e:
+        logger.error("api_vm_leaderboard error: " + str(e))
+        return web.json_response({"leaderboard": []})
+
 async def api_vm_index(request):
     from aiohttp import web
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vocabmillionaire.html")
@@ -6220,6 +6282,7 @@ async def start_web_server(app_ptb):
     web_app.router.add_get("/vocabmillionaire", api_vm_index)
     web_app.router.add_post("/api/vm/start", api_vm_start)
     web_app.router.add_post("/api/vm/answer", api_vm_answer)
+    web_app.router.add_post("/api/vm/leaderboard", api_vm_leaderboard)
     runner = web.AppRunner(web_app)
     await runner.setup()
     port = int(os.environ.get("PORT", "8080"))
@@ -6653,6 +6716,12 @@ def main():
             td_bootstrap_bank()
         except Exception as e:
             logger.error("td bootstrap failed: " + str(e))
+    # وارد کردن بانک آماده‌ی Vocabulary Millionaire از فایل (با VM_IMPORT=true)
+    if os.environ.get("VM_IMPORT", "").lower() in ("1", "true", "yes"):
+        try:
+            vm_import_from_file()
+        except Exception as e:
+            logger.error("vm import failed: " + str(e))
     # پر کردن یک‌باره‌ی بانک Vocabulary Millionaire (با VM_BOOTSTRAP=true)
     if os.environ.get("VM_BOOTSTRAP", "").lower() in ("1", "true", "yes"):
         try:
