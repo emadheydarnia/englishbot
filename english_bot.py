@@ -309,6 +309,23 @@ def save_user(telegram_id, name, student_class, language='fa', phone=''):
     except Exception as e:
         print("save_user error: " + str(e))
 
+def has_perfect_exam_before(telegram_id, topic):
+    """آیا این کاربر قبلاً همین آزمون (topic) رو با نمره‌ی کامل (۱۰۰٪) زده؟"""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) FROM students
+            WHERE telegram_id=%s AND activity_type='exam' AND topic=%s
+              AND total>0 AND score>=total
+        """, (telegram_id, topic))
+        n = cur.fetchone()[0]
+        cur.close(); conn.close()
+        return n > 0
+    except Exception as e:
+        print("has_perfect_exam_before error: " + str(e))
+        return False
+
 def add_points(telegram_id, points, reason=""):
     """اضافه کردن امتیاز"""
     try:
@@ -3147,6 +3164,51 @@ async def send_question(context, user_id, state):
     )
     await context.bot.send_message(chat_id=user_id, text=text)
 
+EXAM_SYNONYMS = [
+    {"anyone", "anybody"},
+    {"everyone", "everybody"},
+    {"someone", "somebody"},
+    {"no one", "noone", "nobody"},
+    {"cannot", "can not", "can't"},
+    {"do not", "don't"},
+    {"does not", "doesn't"},
+    {"did not", "didn't"},
+    {"is not", "isn't"},
+    {"are not", "aren't"},
+    {"was not", "wasn't"},
+    {"were not", "weren't"},
+    {"have not", "haven't"},
+    {"has not", "hasn't"},
+    {"will not", "won't"},
+    {"would not", "wouldn't"},
+    {"should not", "shouldn't"},
+    {"it is", "it's"},
+    {"i am", "i'm"},
+]
+
+def normalize_answer(s):
+    """نرمال‌سازی جواب: حروف کوچک، حذف علائم نگارشی ابتدا/انتها، یکدست کردن فاصله و آپوستروف."""
+    import re
+    s = (s or "").strip().lower()
+    s = s.replace("\u2019", "'").replace("\u02bc", "'").replace("`", "'")
+    s = s.strip(" .,!?;:\"'()[]")
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+def answers_match(given, correct_opts):
+    """آیا جواب کاربر با یکی از جواب‌های درست (با نرمال‌سازی و مترادف) می‌خونه؟"""
+    g = normalize_answer(given)
+    if not g:
+        return False
+    norm_opts = [normalize_answer(c) for c in correct_opts]
+    if g in norm_opts:
+        return True
+    for opt in norm_opts:
+        for group in EXAM_SYNONYMS:
+            if g in group and opt in group:
+                return True
+    return False
+
 async def finish_exam(context, user_id, state, timed_out=False):
     answers = state.get("answers", [])
     questions = state["questions"]
@@ -3160,8 +3222,8 @@ async def finish_exam(context, user_id, state, timed_out=False):
     for i, q in enumerate(questions):
         given = answers[i].strip() if i < len(answers) else "(no answer)"
         correct = q["answer"]
-        correct_opts = [c.strip().lower() for c in correct.split("/")]
-        if given.lower() in correct_opts:
+        correct_opts = correct.split("/")
+        if answers_match(given, correct_opts):
             score += 1
             lines.append("✅ Q" + str(i+1) + ": " + given)
         else:
@@ -3224,6 +3286,9 @@ async def finish_exam(context, user_id, state, timed_out=False):
     except Exception as e:
         logger.error("Teacher notify failed: " + str(e))
 
+    # آیا قبلاً همین آزمون رو ۱۰۰٪ زده؟ (قبل از ذخیره‌ی نتیجه‌ی فعلی چک می‌شه)
+    already_perfect = has_perfect_exam_before(user_id, title)
+
     # ذخیره در دیتابیس
     save_activity(
         telegram_id=user_id,
@@ -3237,8 +3302,11 @@ async def finish_exam(context, user_id, state, timed_out=False):
     )
 
     # امتیازدهی (فقط Persian Students — غیر آلمانی)
+    # اگه قبلاً این آزمون رو ۱۰۰٪ زده، دیگه امتیاز نمی‌گیره (جلوگیری از تکرار برای امتیاز)
     if not cat_key.startswith("de_"):
-        if pct >= 80:
+        if already_perfect:
+            pass  # قبلاً نمره‌ی کامل گرفته → بدون امتیاز
+        elif pct >= 80:
             add_points(user_id, 100, "exam 80%+: " + title)
         elif pct >= 60:
             add_points(user_id, 60, "exam 60-79%: " + title)
