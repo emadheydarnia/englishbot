@@ -276,6 +276,9 @@ def init_db():
             )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_qs_quiz ON quiz_submissions(quiz_id)")
+        # شماره‌ی جلسه: هر بار فعال‌سازی یک جلسه‌ی جدید
+        cur.execute("ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS current_session INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE quiz_submissions ADD COLUMN IF NOT EXISTS session_id INTEGER DEFAULT 0")
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         print("DB init error: " + str(e))
@@ -6549,14 +6552,71 @@ def quiz_gen_code():
     import random as _r
     return str(_r.randint(1000, 9999))
 
-def quiz_report_data(quiz_id):
-    """همه‌ی داده‌های لازم برای گزارش یک آزمون رو جمع می‌کنه."""
+_QUIZ_FONT_READY = None
+def _ensure_persian_font():
+    """فونت فارسی رو یک‌بار ثبت می‌کنه. اسم فونت یا None برمی‌گردونه."""
+    global _QUIZ_FONT_READY
+    if _QUIZ_FONT_READY is not None:
+        return _QUIZ_FONT_READY or None
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidates = ["Vazir.ttf", "Vazirmatn-Regular.ttf", "IRANSans.ttf",
+                      "fonts/Vazir.ttf", "fonts/Vazirmatn-Regular.ttf"]
+        for c in candidates:
+            p = os.path.join(here, c)
+            if os.path.exists(p):
+                pdfmetrics.registerFont(TTFont("PersianFont", p))
+                _QUIZ_FONT_READY = "PersianFont"
+                return "PersianFont"
+    except Exception as e:
+        logger.error("persian font load error: " + str(e))
+    _QUIZ_FONT_READY = ""
+    return None
+
+def _fa(text):
+    """متن فارسی رو برای نمایش درست در PDF آماده می‌کنه (reshape + bidi)."""
+    if text is None:
+        return ""
+    s = str(text)
+    if not any('\u0600' <= ch <= '\u06FF' or '\uFB50' <= ch <= '\uFEFF' for ch in s):
+        return s
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        return get_display(arabic_reshaper.reshape(s))
+    except Exception:
+        return s
+
+def quiz_sessions_list(quiz_id):
+    """لیست جلسه‌های یک آزمون (هر فعال‌سازی) با تعداد پاسخ و بازه‌ی زمانی."""
+    try:
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""SELECT session_id, COUNT(*) AS n,
+                       MIN(finished_at) AS first_at, MAX(finished_at) AS last_at
+                       FROM quiz_submissions WHERE quiz_id=%s
+                       GROUP BY session_id ORDER BY session_id DESC""", (quiz_id,))
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.close(); conn.close()
+        return rows
+    except Exception as e:
+        logger.error("quiz_sessions_list error: " + str(e))
+        return []
+
+def quiz_report_data(quiz_id, session_id=None):
+    """داده‌های گزارش یک آزمون. اگه session_id داده شه، فقط همون جلسه."""
     conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("SELECT * FROM quizzes WHERE id=%s", (quiz_id,))
     quiz = cur.fetchone()
     if not quiz:
         cur.close(); conn.close(); return None
-    cur.execute("""SELECT * FROM quiz_submissions WHERE quiz_id=%s ORDER BY score DESC, finished_at ASC""", (quiz_id,))
+    if session_id is not None:
+        cur.execute("""SELECT * FROM quiz_submissions WHERE quiz_id=%s AND session_id=%s
+                       ORDER BY score DESC, finished_at ASC""", (quiz_id, session_id))
+    else:
+        cur.execute("""SELECT * FROM quiz_submissions WHERE quiz_id=%s
+                       ORDER BY score DESC, finished_at ASC""", (quiz_id,))
     subs = [dict(r) for r in cur.fetchall()]
     # سابقه‌ی هر دانشجو در آزمون‌های دیگه (برای مقایسه) — بر اساس telegram_id
     history = {}
@@ -6575,7 +6635,7 @@ def quiz_report_data(quiz_id):
 def _pct(score, total):
     return round(score * 100.0 / total) if total else 0
 
-def build_quiz_report_pdf(quiz_id):
+def build_quiz_report_pdf(quiz_id, session_id=None):
     """گزارش جامع آزمون (انگلیسی) به‌صورت PDF. مسیر فایل رو برمی‌گردونه."""
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
@@ -6587,7 +6647,7 @@ def build_quiz_report_pdf(quiz_id):
     import tempfile, json as _j, statistics as _st
     from datetime import datetime as _dt
 
-    data = quiz_report_data(quiz_id)
+    data = quiz_report_data(quiz_id, session_id)
     if not data or not data["subs"]:
         return None
     quiz = data["quiz"]; subs = data["subs"]; history = data["history"]
@@ -6598,8 +6658,13 @@ def build_quiz_report_pdf(quiz_id):
     small = ParagraphStyle("small", parent=styles["Normal"], fontSize=8, textColor=colors.grey)
     normal = ParagraphStyle("nm", parent=styles["Normal"], fontSize=9)
     cell = ParagraphStyle("cell", parent=styles["Normal"], fontSize=8, leading=10)
+    _pf = _ensure_persian_font()
+    from reportlab.lib.enums import TA_RIGHT
+    namecell = ParagraphStyle("namecell", parent=cell,
+                              fontName=(_pf or "Helvetica"),
+                              alignment=(TA_RIGHT if _pf else 0))
 
-    path = os.path.join(tempfile.gettempdir(), "quiz_report_%s.pdf" % quiz_id)
+    path = os.path.join(tempfile.gettempdir(), "quiz_report_%s_%s.pdf" % (quiz_id, session_id if session_id is not None else "all"))
     doc = SimpleDocTemplate(path, pagesize=A4, topMargin=15*mm, bottomMargin=15*mm,
                             leftMargin=14*mm, rightMargin=14*mm)
     story = []
@@ -6608,6 +6673,8 @@ def build_quiz_report_pdf(quiz_id):
     story.append(Paragraph("Class Quiz Report", h1))
     story.append(Paragraph(quiz["title"], ParagraphStyle("t", parent=normal, fontSize=11, textColor=colors.black)))
     story.append(Paragraph("Generated: " + _dt.now().strftime("%Y-%m-%d %H:%M"), small))
+    if session_id is not None:
+        story.append(Paragraph("Session #%s" % session_id, small))
     story.append(Spacer(1, 6))
 
     # ── خلاصه‌ی کلاس ──
@@ -6664,8 +6731,8 @@ def build_quiz_report_pdf(quiz_id):
             rp.append("%d very-fast answers" % fast)
         rp_text = "; ".join(rp) if rp else "—"
         rows.append([str(i), str(tid),
-                     Paragraph(s["student_name"] or "-", cell),
-                     s["class_no"] or "-",
+                     Paragraph(_fa(s["student_name"] or "-"), namecell),
+                     Paragraph(_fa(s["class_no"] or "-"), namecell),
                      "%d/100" % sc, Paragraph(trend, cell), Paragraph(rp_text, cell)])
     tr = Table(rows, colWidths=[7*mm, 24*mm, 30*mm, 14*mm, 16*mm, 34*mm, 40*mm], repeatRows=1)
     tr.setStyle(TableStyle([
@@ -6799,7 +6866,9 @@ async def api_quiz_teacher_activate(request):
         conn = get_db(); cur = conn.cursor()
         # فقط یک آزمون هم‌زمان فعال: اول همه رو غیرفعال کن
         cur.execute("UPDATE quizzes SET is_active=FALSE WHERE id<>%s", (quiz_id,))
-        cur.execute("UPDATE quizzes SET is_active=TRUE, access_code=%s WHERE id=%s", (code, quiz_id))
+        # جلسه‌ی جدید: شماره‌ی جلسه یکی زیاد می‌شه
+        cur.execute("""UPDATE quizzes SET is_active=TRUE, access_code=%s,
+                       current_session=COALESCE(current_session,0)+1 WHERE id=%s""", (code, quiz_id))
         conn.commit(); cur.close(); conn.close()
         return web.json_response({"ok": True, "code": code})
     except Exception as e:
@@ -6964,13 +7033,17 @@ async def api_quiz_student_submit(request):
     started_dt = _dt.utcfromtimestamp(started) if started else None
     try:
         conn = get_db(); cur = conn.cursor()
+        # شماره‌ی جلسه‌ی فعلی این آزمون
+        cur.execute("SELECT COALESCE(current_session,0) FROM quizzes WHERE id=%s", (quiz_id,))
+        srow = cur.fetchone()
+        sess_id = srow[0] if srow else 0
         cur.execute("""INSERT INTO quiz_submissions
-            (quiz_id, telegram_id, student_name, class_no, answers, score, total, details, started_at, finished_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
+            (quiz_id, telegram_id, student_name, class_no, answers, score, total, details, started_at, finished_at, session_id)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s)""",
             (quiz_id, uid, name, class_no, _qjson.dumps(answers), correct, total_q,
              _qjson.dumps({"items": details, "exits": exits, "q_times": q_times,
                            "exit_per_q": exit_per_q, "score100": score100}),
-             started_dt))
+             started_dt, sess_id))
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         logger.error("quiz submit save error: " + str(e))
@@ -7498,32 +7571,80 @@ async def quizreport_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def quiz_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ساخت و ارسال PDF گزارش."""
+    """مرحله‌ی اول: نشون دادن لیست جلسه‌های این آزمون."""
     query = update.callback_query
     await query.answer()
     if query.from_user.id != TEACHER_ID:
         await query.edit_message_text("🚫 فقط معلم.")
         return
     quiz_id = int(query.data.replace("qreport_", ""))
-    await query.edit_message_text("⏳ در حال ساخت گزارش PDF...")
+    sessions = quiz_sessions_list(quiz_id)
+    if not sessions:
+        await query.edit_message_text("هنوز کسی این آزمون رو نداده، گزارشی نیست.")
+        return
+    rows = []
+    for s in sessions:
+        sid = s["session_id"]
+        when = ""
+        try:
+            if s["first_at"]:
+                when = s["first_at"].strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            when = ""
+        label = "📊 جلسه %s — %s پاسخ" % (sid, s["n"])
+        if when:
+            label += " — " + when
+        rows.append([InlineKeyboardButton(label, callback_data="qrep_%d_%d" % (quiz_id, sid))])
+    # گزینه‌ی همه‌ی جلسه‌ها
+    rows.append([InlineKeyboardButton("📚 همه‌ی جلسه‌ها با هم", callback_data="qrepall_%d" % quiz_id)])
+    await query.edit_message_text("کدوم جلسه؟ (هر بار فعال‌سازی = یک جلسه)",
+        reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def _send_quiz_report(query, context, quiz_id, session_id):
+    label = ("جلسه " + str(session_id)) if session_id is not None else "همه‌ی جلسه‌ها"
+    await query.edit_message_text("⏳ در حال ساخت گزارش (%s)..." % label)
     try:
-        path = build_quiz_report_pdf(quiz_id)
+        path = build_quiz_report_pdf(quiz_id, session_id)
         if not path:
-            await query.edit_message_text("هنوز کسی این آزمون رو نداده، گزارشی نیست.")
+            await query.edit_message_text("پاسخی برای این جلسه نیست.")
             return
         with open(path, "rb") as f:
             await context.bot.send_document(
                 chat_id=query.from_user.id, document=f,
                 filename="quiz_report.pdf",
-                caption="📊 گزارش جامع آزمون (انگلیسی)")
+                caption="📊 گزارش آزمون — %s" % label)
         try:
             os.remove(path)
         except Exception:
             pass
-        await query.edit_message_text("✅ گزارش فرستاده شد.")
+        await query.edit_message_text("✅ گزارش فرستاده شد (%s)." % label)
     except Exception as e:
         logger.error("quiz report error: " + str(e))
         await query.edit_message_text("خطا در ساخت گزارش: " + str(e))
+
+
+async def quiz_report_session_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مرحله‌ی دوم: ساخت گزارش یک جلسه‌ی مشخص."""
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id != TEACHER_ID:
+        await query.edit_message_text("🚫 فقط معلم.")
+        return
+    parts = query.data.replace("qrep_", "").split("_")
+    quiz_id = int(parts[0]); session_id = int(parts[1])
+    await _send_quiz_report(query, context, quiz_id, session_id)
+
+
+async def quiz_report_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """گزارش همه‌ی جلسه‌ها با هم."""
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id != TEACHER_ID:
+        await query.edit_message_text("🚫 فقط معلم.")
+        return
+    quiz_id = int(query.data.replace("qrepall_", ""))
+    await _send_quiz_report(query, context, quiz_id, None)
 
 
 async def quiz_answerkey_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -7611,6 +7732,8 @@ def main():
     app.add_handler(CommandHandler("quiz", quiz_cmd))
     app.add_handler(CommandHandler("quizreport", quizreport_cmd))
     app.add_handler(CallbackQueryHandler(quiz_report_callback, pattern=r"^qreport_"))
+    app.add_handler(CallbackQueryHandler(quiz_report_session_callback, pattern=r"^qrep_\d+_\d+$"))
+    app.add_handler(CallbackQueryHandler(quiz_report_all_callback, pattern=r"^qrepall_\d+$"))
     app.add_handler(CallbackQueryHandler(quiz_answerkey_callback, pattern=r"^qkey_"))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, champion_photo_handler))
