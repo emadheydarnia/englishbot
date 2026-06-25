@@ -6568,7 +6568,8 @@ async def api_quiz_teacher_activate(request):
     code = str(data.get("code", "")).strip() or quiz_gen_code()
     try:
         conn = get_db(); cur = conn.cursor()
-        # فقط یک آزمون هم‌زمان فعال باشه؟ نه — اجازه می‌دیم چندتا، ولی کد یکتا
+        # فقط یک آزمون هم‌زمان فعال: اول همه رو غیرفعال کن
+        cur.execute("UPDATE quizzes SET is_active=FALSE WHERE id<>%s", (quiz_id,))
         cur.execute("UPDATE quizzes SET is_active=TRUE, access_code=%s WHERE id=%s", (code, quiz_id))
         conn.commit(); cur.close(); conn.close()
         return web.json_response({"ok": True, "code": code})
@@ -6605,6 +6606,145 @@ async def api_quiz_whoami(request):
     if not user:
         return web.json_response({"error": "auth_failed"}, status=401)
     return web.json_response({"is_teacher": user["id"] == TEACHER_ID})
+
+def _quiz_active_by_code(code):
+    try:
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM quizzes WHERE is_active=TRUE AND access_code=%s", (str(code),))
+        row = cur.fetchone(); cur.close(); conn.close()
+        return dict(row) if row else None
+    except Exception as e:
+        logger.error("_quiz_active_by_code error: " + str(e))
+        return None
+
+QUIZ_STUDENT_SESSIONS = {}
+
+async def api_quiz_student_enter(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    code = str(data.get("code", "")).strip()
+    qz = _quiz_active_by_code(code)
+    if not qz:
+        return web.json_response({"error": "bad_code"}, status=404)
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM quiz_submissions WHERE quiz_id=%s AND telegram_id=%s",
+                    (qz["id"], user["id"]))
+        already = cur.fetchone()[0] > 0
+        cur.close(); conn.close()
+    except Exception:
+        already = False
+    if already:
+        return web.json_response({"error": "already_done"}, status=409)
+    full = quiz_get(qz["id"])
+    return web.json_response({
+        "quiz_id": qz["id"], "title": qz["title"],
+        "duration_min": qz["duration_min"], "num_questions": len(full["questions"])})
+
+async def api_quiz_student_start(request):
+    from aiohttp import web
+    import time as _t
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    code = str(data.get("code", "")).strip()
+    name = str(data.get("name", "")).strip()[:120]
+    class_no = str(data.get("class_no", "")).strip()[:40]
+    if not name or not class_no:
+        return web.json_response({"error": "need_info"}, status=400)
+    qz = _quiz_active_by_code(code)
+    if not qz:
+        return web.json_response({"error": "bad_code"}, status=404)
+    full = quiz_get(qz["id"])
+    pub = []
+    for q in full["questions"]:
+        try:
+            meta = _qjson.loads(q.get("options") or "{}")
+        except Exception:
+            meta = {}
+        pub.append({"qnum": q["qnum"], "qtype": q["qtype"], "question": q["question"],
+                    "options": meta.get("options", []), "context": meta.get("context", "")})
+    uid = user["id"]
+    QUIZ_STUDENT_SESSIONS[uid] = {"quiz_id": qz["id"], "started_at": _t.time(),
+        "name": name, "class_no": class_no, "duration_sec": qz["duration_min"] * 60}
+    return web.json_response({"quiz_id": qz["id"], "title": qz["title"],
+        "questions": pub, "duration_sec": qz["duration_min"] * 60, "watermark": str(uid)})
+
+def _quiz_ai_check(question, correct_answer, given):
+    """فقط برای needs_ai: آیا جواب دانشجو درسته؟ → True/False"""
+    prompt = (
+        "You are grading one fill-in-the-blank English answer. Be fair: accept any grammatically "
+        "correct answer that fits, including valid alternatives.\n"
+        "Question: " + question + "\n"
+        "Model answer(s): " + correct_answer + "\n"
+        "Student wrote: " + given + "\n"
+        "Reply with ONLY one word: CORRECT or WRONG."
+    )
+    try:
+        resp = call_gemini_api([], prompt)
+    except Exception:
+        resp = None
+    if not resp:
+        return False
+    return "CORRECT" in resp.strip().upper()
+
+async def api_quiz_student_submit(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    uid = user["id"]
+    sess = QUIZ_STUDENT_SESSIONS.get(uid)
+    quiz_id = data.get("quiz_id")
+    answers = data.get("answers", {})
+    exits = int(data.get("exits", 0))
+    q_times = data.get("q_times", {})
+    if not quiz_id:
+        return web.json_response({"error": "no_quiz"}, status=400)
+    full = quiz_get(quiz_id)
+    if not full:
+        return web.json_response({"error": "no_quiz"}, status=404)
+    questions = full["questions"]
+    total_q = len(questions)
+    correct = 0
+    details = []
+    for q in questions:
+        qn = str(q["qnum"])
+        given = str(answers.get(qn, "")).strip()
+        correct_opts = q["answer"].split("/")
+        is_ok = answers_match(given, correct_opts)
+        if (not is_ok) and q.get("needs_ai") and given:
+            if _quiz_ai_check(q["question"], q["answer"], given):
+                is_ok = True
+        if is_ok:
+            correct += 1
+        details.append({"qnum": q["qnum"], "question": q["question"],
+                        "given": given, "correct": q["answer"], "ok": is_ok})
+    score100 = round(correct * 100.0 / total_q) if total_q else 0
+    name = sess["name"] if sess else str(data.get("name", "")).strip()[:120]
+    class_no = sess["class_no"] if sess else str(data.get("class_no", "")).strip()[:40]
+    started = sess["started_at"] if sess else None
+    from datetime import datetime as _dt
+    started_dt = _dt.utcfromtimestamp(started) if started else None
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("""INSERT INTO quiz_submissions
+            (quiz_id, telegram_id, student_name, class_no, answers, score, total, details, started_at, finished_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
+            (quiz_id, uid, name, class_no, _qjson.dumps(answers), correct, total_q,
+             _qjson.dumps({"items": details, "exits": exits, "q_times": q_times, "score100": score100}),
+             started_dt))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        logger.error("quiz submit save error: " + str(e))
+    QUIZ_STUDENT_SESSIONS.pop(uid, None)
+    return web.json_response({"score": correct, "total": total_q,
+                              "score100": score100, "details": details})
 
 async def start_web_server(app_ptb):
     """وب‌سرور aiohttp رو کنار bot بالا میاره."""
@@ -6648,6 +6788,9 @@ async def start_web_server(app_ptb):
     # آزمون کلاسی
     web_app.router.add_get("/quiz", api_quiz_index)
     web_app.router.add_post("/api/quiz/whoami", api_quiz_whoami)
+    web_app.router.add_post("/api/quiz/student/enter", api_quiz_student_enter)
+    web_app.router.add_post("/api/quiz/student/start", api_quiz_student_start)
+    web_app.router.add_post("/api/quiz/student/submit", api_quiz_student_submit)
     web_app.router.add_post("/api/quiz/teacher/list", api_quiz_teacher_list)
     web_app.router.add_post("/api/quiz/teacher/activate", api_quiz_teacher_activate)
     web_app.router.add_post("/api/quiz/teacher/deactivate", api_quiz_teacher_deactivate)
