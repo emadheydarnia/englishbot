@@ -6549,6 +6549,235 @@ def quiz_gen_code():
     import random as _r
     return str(_r.randint(1000, 9999))
 
+def quiz_report_data(quiz_id):
+    """همه‌ی داده‌های لازم برای گزارش یک آزمون رو جمع می‌کنه."""
+    conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM quizzes WHERE id=%s", (quiz_id,))
+    quiz = cur.fetchone()
+    if not quiz:
+        cur.close(); conn.close(); return None
+    cur.execute("""SELECT * FROM quiz_submissions WHERE quiz_id=%s ORDER BY score DESC, finished_at ASC""", (quiz_id,))
+    subs = [dict(r) for r in cur.fetchall()]
+    # سابقه‌ی هر دانشجو در آزمون‌های دیگه (برای مقایسه) — بر اساس telegram_id
+    history = {}
+    for s in subs:
+        tid = s["telegram_id"]
+        if tid in history:
+            continue
+        cur.execute("""SELECT q.title, sub.score, sub.total, sub.finished_at
+                       FROM quiz_submissions sub JOIN quizzes q ON q.id=sub.quiz_id
+                       WHERE sub.telegram_id=%s AND sub.quiz_id<>%s
+                       ORDER BY sub.finished_at ASC""", (tid, quiz_id))
+        history[tid] = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    return {"quiz": dict(quiz), "subs": subs, "history": history}
+
+def _pct(score, total):
+    return round(score * 100.0 / total) if total else 0
+
+def build_quiz_report_pdf(quiz_id):
+    """گزارش جامع آزمون (انگلیسی) به‌صورت PDF. مسیر فایل رو برمی‌گردونه."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
+                                    TableStyle, PageBreak)
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    import tempfile, json as _j, statistics as _st
+    from datetime import datetime as _dt
+
+    data = quiz_report_data(quiz_id)
+    if not data or not data["subs"]:
+        return None
+    quiz = data["quiz"]; subs = data["subs"]; history = data["history"]
+
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1", parent=styles["Heading1"], fontSize=17, textColor=colors.HexColor("#1a3a6b"), spaceAfter=4)
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], fontSize=12, textColor=colors.HexColor("#2a5da3"), spaceBefore=10, spaceAfter=4)
+    small = ParagraphStyle("small", parent=styles["Normal"], fontSize=8, textColor=colors.grey)
+    normal = ParagraphStyle("nm", parent=styles["Normal"], fontSize=9)
+    cell = ParagraphStyle("cell", parent=styles["Normal"], fontSize=8, leading=10)
+
+    path = os.path.join(tempfile.gettempdir(), "quiz_report_%s.pdf" % quiz_id)
+    doc = SimpleDocTemplate(path, pagesize=A4, topMargin=15*mm, bottomMargin=15*mm,
+                            leftMargin=14*mm, rightMargin=14*mm)
+    story = []
+
+    # ── سرتیتر ──
+    story.append(Paragraph("Class Quiz Report", h1))
+    story.append(Paragraph(quiz["title"], ParagraphStyle("t", parent=normal, fontSize=11, textColor=colors.black)))
+    story.append(Paragraph("Generated: " + _dt.now().strftime("%Y-%m-%d %H:%M"), small))
+    story.append(Spacer(1, 6))
+
+    # ── خلاصه‌ی کلاس ──
+    scores100 = [_pct(s["score"], s["total"]) for s in subs]
+    avg = round(_st.mean(scores100)) if scores100 else 0
+    mx = max(scores100) if scores100 else 0
+    mn = min(scores100) if scores100 else 0
+    summary = [
+        ["Submissions", str(len(subs))],
+        ["Class average", str(avg) + " / 100"],
+        ["Highest", str(mx) + " / 100"],
+        ["Lowest", str(mn) + " / 100"],
+        ["Questions", str(subs[0]["total"]) if subs else "-"],
+    ]
+    t = Table(summary, colWidths=[40*mm, 50*mm])
+    t.setStyle(TableStyle([
+        ("FONTSIZE", (0,0), (-1,-1), 9),
+        ("TEXTCOLOR", (0,0), (0,-1), colors.HexColor("#2a5da3")),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 3), ("TOPPADDING", (0,0), (-1,-1), 3),
+        ("LINEBELOW", (0,0), (-1,-2), 0.3, colors.HexColor("#dddddd")),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 8))
+
+    # ── جدول نتایج ──
+    story.append(Paragraph("Results", h2))
+    rows = [["#", "Telegram ID", "Name", "Class", "Score", "Trend", "Review Points"]]
+    for i, s in enumerate(subs, 1):
+        tid = s["telegram_id"]
+        sc = _pct(s["score"], s["total"])
+        # روند نسبت به آزمون‌های قبلی
+        hist = history.get(tid, [])
+        trend = "—"
+        if hist:
+            prev = [ _pct(h["score"], h["total"]) for h in hist ]
+            pavg = round(_st.mean(prev))
+            diff = sc - pavg
+            arrow = "up" if diff > 4 else ("down" if diff < -4 else "=")
+            sym = {"up":"+", "down":"", "=":"±"}[arrow]
+            trend = "prev avg %d (%s%d)" % (pavg, sym, diff)
+        # Review Points
+        try:
+            det = _j.loads(s["details"] or "{}")
+        except Exception:
+            det = {}
+        rp = []
+        exits = det.get("exits", 0)
+        if exits:
+            rp.append("left app %dx" % exits)
+        # پاسخ‌های خیلی سریع
+        qt = det.get("q_times", {})
+        fast = sum(1 for v in qt.values() if isinstance(v, (int, float)) and v <= 3)
+        if fast >= 3:
+            rp.append("%d very-fast answers" % fast)
+        rp_text = "; ".join(rp) if rp else "—"
+        rows.append([str(i), str(tid),
+                     Paragraph(s["student_name"] or "-", cell),
+                     s["class_no"] or "-",
+                     "%d/100" % sc, Paragraph(trend, cell), Paragraph(rp_text, cell)])
+    tr = Table(rows, colWidths=[7*mm, 24*mm, 30*mm, 14*mm, 16*mm, 34*mm, 40*mm], repeatRows=1)
+    tr.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#2a5da3")),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+        ("FONTSIZE", (0,0), (-1,-1), 8),
+        ("GRID", (0,0), (-1,-1), 0.3, colors.HexColor("#cccccc")),
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f2f6fc")]),
+        ("TOPPADDING", (0,0), (-1,-1), 3), ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+    ]))
+    story.append(tr)
+    story.append(Spacer(1, 6))
+    story.append(Paragraph("Review Points are neutral activity signals (app exits, unusually fast answers) for your own judgement — not proof of anything.", small))
+
+    # ── سوال‌های پرغلط ──
+    story.append(Paragraph("Most-missed questions", h2))
+    qstats = {}
+    for s in subs:
+        try:
+            det = _j.loads(s["details"] or "{}")
+        except Exception:
+            det = {}
+        for it in det.get("items", []):
+            qn = it.get("qnum")
+            if qn is None: continue
+            if qn not in qstats:
+                qstats[qn] = {"q": it.get("question",""), "wrong": 0, "answer": it.get("correct","")}
+            if not it.get("ok"):
+                qstats[qn]["wrong"] += 1
+    missed = sorted(qstats.items(), key=lambda kv: kv[1]["wrong"], reverse=True)
+    mrows = [["Q", "Question", "Correct answer", "Wrong"]]
+    for qn, st in missed[:10]:
+        if st["wrong"] == 0: continue
+        mrows.append([str(qn), Paragraph(st["q"], cell), Paragraph(st["answer"], cell), str(st["wrong"])])
+    if len(mrows) > 1:
+        mt = Table(mrows, colWidths=[8*mm, 80*mm, 50*mm, 14*mm], repeatRows=1)
+        mt.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#c0504d")),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+            ("FONTSIZE", (0,0), (-1,-1), 8),
+            ("GRID", (0,0), (-1,-1), 0.3, colors.HexColor("#cccccc")),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("TOPPADDING", (0,0), (-1,-1), 3), ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+        ]))
+        story.append(mt)
+    else:
+        story.append(Paragraph("No wrong answers — perfect class!", normal))
+
+    doc.build(story)
+    return path
+
+def build_quiz_answerkey_pdf(quiz_id):
+    """کلید جواب ثابت یک آزمون (انگلیسی) به‌صورت PDF. مسیر فایل رو برمی‌گردونه."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle)
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    import tempfile, json as _j
+
+    full = quiz_get(quiz_id)
+    if not full:
+        return None
+    quiz = full["quiz"]; questions = full["questions"]
+
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1", parent=styles["Heading1"], fontSize=17, textColor=colors.HexColor("#1a3a6b"), spaceAfter=4)
+    small = ParagraphStyle("small", parent=styles["Normal"], fontSize=8, textColor=colors.grey)
+    cell = ParagraphStyle("cell", parent=styles["Normal"], fontSize=9, leading=12)
+    cellb = ParagraphStyle("cellb", parent=styles["Normal"], fontSize=9, leading=12, textColor=colors.HexColor("#1d7a36"))
+    ctxst = ParagraphStyle("ctx", parent=styles["Normal"], fontSize=8, leading=10,
+                           textColor=colors.grey, fontName="Helvetica-Oblique")
+
+    path = os.path.join(tempfile.gettempdir(), "quiz_answerkey_%s.pdf" % quiz_id)
+    doc = SimpleDocTemplate(path, pagesize=A4, topMargin=15*mm, bottomMargin=15*mm,
+                            leftMargin=14*mm, rightMargin=14*mm)
+    story = []
+    story.append(Paragraph("Answer Key", h1))
+    story.append(Paragraph(quiz["title"], ParagraphStyle("t", parent=cell, fontSize=11, textColor=colors.black)))
+    story.append(Paragraph("Emad English Lab", small))
+    story.append(Spacer(1, 8))
+
+    rows = [["#", "Question", "Correct answer"]]
+    for q in questions:
+        try:
+            meta = _j.loads(q.get("options") or "{}")
+        except Exception:
+            meta = {}
+        ctx = meta.get("context", "")
+        qcell = []
+        if ctx:
+            qcell.append(Paragraph(ctx, ctxst))
+        qcell.append(Paragraph(q["question"], cell))
+        ans = q["answer"].replace("/", "  •  ")
+        rows.append([str(q["qnum"]), qcell, Paragraph(ans, cellb)])
+    t = Table(rows, colWidths=[8*mm, 110*mm, 54*mm], repeatRows=1)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#2a5da3")),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+        ("FONTSIZE", (0,0), (-1,0), 9),
+        ("GRID", (0,0), (-1,-1), 0.3, colors.HexColor("#cccccc")),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f2f6fc")]),
+        ("TOPPADDING", (0,0), (-1,-1), 4), ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 8))
+    story.append(Paragraph("Note: where several answers are separated by •, any of them is correct (e.g. 'is having' and \"'s having\").", small))
+    doc.build(story)
+    return path
+
 # ── API معلم ──
 async def api_quiz_teacher_list(request):
     from aiohttp import web
@@ -6618,6 +6847,7 @@ def _quiz_active_by_code(code):
         return None
 
 QUIZ_STUDENT_SESSIONS = {}
+_PTB_APP = None  # رفرنس به اپلیکیشن تلگرام برای ارسال فایل از web endpoint
 
 async def api_quiz_student_enter(request):
     from aiohttp import web
@@ -6704,6 +6934,7 @@ async def api_quiz_student_submit(request):
     answers = data.get("answers", {})
     exits = int(data.get("exits", 0))
     q_times = data.get("q_times", {})
+    exit_per_q = data.get("exit_per_q", {})
     if not quiz_id:
         return web.json_response({"error": "no_quiz"}, status=400)
     full = quiz_get(quiz_id)
@@ -6737,17 +6968,33 @@ async def api_quiz_student_submit(request):
             (quiz_id, telegram_id, student_name, class_no, answers, score, total, details, started_at, finished_at)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
             (quiz_id, uid, name, class_no, _qjson.dumps(answers), correct, total_q,
-             _qjson.dumps({"items": details, "exits": exits, "q_times": q_times, "score100": score100}),
+             _qjson.dumps({"items": details, "exits": exits, "q_times": q_times,
+                           "exit_per_q": exit_per_q, "score100": score100}),
              started_dt))
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         logger.error("quiz submit save error: " + str(e))
     QUIZ_STUDENT_SESSIONS.pop(uid, None)
+    # ارسال کلید جواب (PDF ثابت) به دانشجو
+    try:
+        if _PTB_APP is not None:
+            keypath = build_quiz_answerkey_pdf(quiz_id)
+            if keypath and os.path.exists(keypath):
+                cap = ("📄 Your exam is submitted.\nScore: %d / 100 (%d/%d correct)\n\n"
+                       "Here is the answer key — compare it with your answers."
+                       % (score100, correct, total_q))
+                with open(keypath, "rb") as f:
+                    await _PTB_APP.bot.send_document(chat_id=uid, document=f,
+                        filename="answer_key.pdf", caption=cap)
+    except Exception as e:
+        logger.error("send answer key error: " + str(e))
     return web.json_response({"score": correct, "total": total_q,
                               "score100": score100, "details": details})
 
 async def start_web_server(app_ptb):
     """وب‌سرور aiohttp رو کنار bot بالا میاره."""
+    global _PTB_APP
+    _PTB_APP = app_ptb
     try:
         from aiohttp import web
     except Exception as e:
@@ -7228,6 +7475,85 @@ async def quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def quizreport_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """گزارش جامع یک آزمون کلاسی (PDF انگلیسی) — فقط معلم."""
+    if update.effective_user.id != TEACHER_ID:
+        await update.message.reply_text("🚫 این بخش فقط برای معلم است.")
+        return
+    quizzes = quiz_list_all()
+    if not quizzes:
+        await update.message.reply_text("هنوز آزمونی وارد نشده.")
+        return
+    rows = []
+    for q in quizzes:
+        rows.append([InlineKeyboardButton(
+            "📊 " + q["title"] + " (" + str(q["nsub"]) + " پاسخ)",
+            callback_data="qreport_" + str(q["id"]))])
+        rows.append([InlineKeyboardButton(
+            "📄 کلید جواب: " + q["title"],
+            callback_data="qkey_" + str(q["id"]))])
+    await update.message.reply_text(
+        "📊 گزارش یا کلید جواب کدوم آزمون؟",
+        reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def quiz_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ساخت و ارسال PDF گزارش."""
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id != TEACHER_ID:
+        await query.edit_message_text("🚫 فقط معلم.")
+        return
+    quiz_id = int(query.data.replace("qreport_", ""))
+    await query.edit_message_text("⏳ در حال ساخت گزارش PDF...")
+    try:
+        path = build_quiz_report_pdf(quiz_id)
+        if not path:
+            await query.edit_message_text("هنوز کسی این آزمون رو نداده، گزارشی نیست.")
+            return
+        with open(path, "rb") as f:
+            await context.bot.send_document(
+                chat_id=query.from_user.id, document=f,
+                filename="quiz_report.pdf",
+                caption="📊 گزارش جامع آزمون (انگلیسی)")
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+        await query.edit_message_text("✅ گزارش فرستاده شد.")
+    except Exception as e:
+        logger.error("quiz report error: " + str(e))
+        await query.edit_message_text("خطا در ساخت گزارش: " + str(e))
+
+
+async def quiz_answerkey_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ساخت و ارسال کلید جواب PDF."""
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id != TEACHER_ID:
+        await query.edit_message_text("🚫 فقط معلم.")
+        return
+    quiz_id = int(query.data.replace("qkey_", ""))
+    await query.edit_message_text("⏳ در حال ساخت کلید جواب...")
+    try:
+        path = build_quiz_answerkey_pdf(quiz_id)
+        if not path:
+            await query.edit_message_text("آزمون پیدا نشد.")
+            return
+        with open(path, "rb") as f:
+            await context.bot.send_document(
+                chat_id=query.from_user.id, document=f,
+                filename="answer_key.pdf", caption="📄 کلید جواب آزمون")
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+        await query.edit_message_text("✅ کلید جواب فرستاده شد.")
+    except Exception as e:
+        logger.error("answerkey error: " + str(e))
+        await query.edit_message_text("خطا: " + str(e))
+
+
 def main():
     init_db()
     # پر کردن یک‌باره‌ی بانک سوالات اگه خالیه (در صورت تنظیم env)
@@ -7283,6 +7609,9 @@ def main():
     app.add_handler(CommandHandler("tdstats", tdstats_cmd))
     app.add_handler(CommandHandler("vmstats", vmstats_cmd))
     app.add_handler(CommandHandler("quiz", quiz_cmd))
+    app.add_handler(CommandHandler("quizreport", quizreport_cmd))
+    app.add_handler(CallbackQueryHandler(quiz_report_callback, pattern=r"^qreport_"))
+    app.add_handler(CallbackQueryHandler(quiz_answerkey_callback, pattern=r"^qkey_"))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, champion_photo_handler))
     app.add_handler(CallbackQueryHandler(button_handler))

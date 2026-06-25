@@ -123,15 +123,15 @@
     <div class="err" id="info-err"></div>
   </div>
 
-  <!-- آزمون -->
+  <!-- آزمون (تک‌سوالی) -->
   <div class="screen" id="screen-exam">
     <div class="examtop">
       <span class="qprog" id="e-prog">سوال ۱</span>
       <span class="timer" id="e-timer">--:--</span>
     </div>
-    <div id="e-questions"></div>
-    <button class="btn green" id="btn-submit" onclick="submitExam()">تحویل آزمون ✅</button>
-    <div class="msg" style="font-size:12px">می‌تونی بالا/پایین کنی و همه رو جواب بدی، بعد تحویل بده.</div>
+    <div id="e-onequestion"></div>
+    <button class="btn green" id="btn-next" onclick="nextQuestion()">بعدی ◀️</button>
+    <div class="msg" id="e-warn" style="font-size:12px"></div>
   </div>
 
   <!-- نتیجه -->
@@ -245,12 +245,11 @@ async function beginExam(){
   document.getElementById('btn-begin').disabled=true;
   try{
     const r=await api('/api/quiz/student/start',{code:curQuiz.code, name:name, class_no:cls});
-    examData=r; examAns={}; examExits=0; qStart={};
+    examData=r; examAns={}; examExits=0; qStart={}; curIdx=0; qExtra=false;
     setupWatermark(r.watermark);
-    renderExam();
     show('screen-exam');
-    startExamTimer(r.duration_sec);
     enableAntiCheat();
+    renderOneQuestion();
   }catch(e){
     if(e.message==='need_info') errEl.textContent='اسم و شماره کلاس رو پر کن.';
     else if(e.message==='bad_code') errEl.textContent='آزمون دیگه فعال نیست.';
@@ -269,49 +268,78 @@ function setupWatermark(text){
   }
 }
 
-function renderExam(){
-  const box=document.getElementById('e-questions');
-  box.innerHTML='';
-  examData.questions.forEach(q=>{
-    const card=document.createElement('div'); card.className='qcard';
-    let html='<div class="qnum">سوال '+faN(q.qnum)+'</div>';
-    if(q.context) html+='<div class="qctx">'+esc(q.context)+'</div>';
-    html+='<div class="qtext">'+esc(q.question)+'</div>';
-    if(q.qtype==='mc' && q.options && q.options.length){
-      html+='<div class="mc-wrap" data-q="'+q.qnum+'">';
-      q.options.forEach((opt,i)=>{
-        html+='<label class="mc-opt" onclick="pickMC('+q.qnum+',this,\''+esc(opt).replace(/'/g,"\\'")+'\')">'+esc(opt)+'</label>';
-      });
-      html+='</div>';
-    } else {
-      html+='<input class="ans-in" data-q="'+q.qnum+'" placeholder="جوابت رو تایپ کن..." '+
-            'oninput="onAns('+q.qnum+',this.value)" onfocus="markStart('+q.qnum+')" '+
-            'autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">';
-    }
-    card.innerHTML=html;
-    box.appendChild(card);
-  });
+const Q_SECONDS=60, Q_EXTRA=15;
+let curIdx=0, qExtra=false;
+
+function renderOneQuestion(){
+  const q=examData.questions[curIdx];
+  document.getElementById('e-prog').textContent='سوال '+faN(curIdx+1)+' از '+faN(examData.questions.length);
+  document.getElementById('e-warn').textContent='';
+  const box=document.getElementById('e-onequestion');
+  let html='<div class="qcard">';
+  if(q.context) html+='<div class="qctx">'+esc(q.context)+'</div>';
+  html+='<div class="qtext">'+esc(q.question)+'</div>';
+  if(q.qtype==='mc' && q.options && q.options.length){
+    html+='<div class="mc-wrap">';
+    q.options.forEach(opt=>{
+      const sel=(examAns[q.qnum]===opt)?' sel':'';
+      html+='<label class="mc-opt'+sel+'" onclick="pickMC('+q.qnum+',this,\''+esc(opt).replace(/'/g,"\\'")+'\')">'+esc(opt)+'</label>';
+    });
+    html+='</div>';
+  } else {
+    const val=examAns[q.qnum]?(' value="'+esc(examAns[q.qnum])+'"'):'';
+    html+='<input class="ans-in" id="ans-cur" placeholder="جوابت رو تایپ کن..."'+val+
+          ' oninput="onAns('+q.qnum+',this.value)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">';
+  }
+  html+='</div>';
+  box.innerHTML=html;
+  // دکمه: آخرین سوال = تحویل
+  const btn=document.getElementById('btn-next');
+  btn.textContent=(curIdx>=examData.questions.length-1)?'تحویل آزمون ✅':'بعدی ◀️';
+  qStart[q.qnum]=Date.now();
+  startQTimer();
 }
-function markStart(qn){ if(!qStart[qn]) qStart[qn]=Date.now(); }
-function onAns(qn,val){ markStart(qn); examAns[qn]=val; }
+function onAns(qn,val){ examAns[qn]=val; }
 function pickMC(qn, el, val){
-  markStart(qn); examAns[qn]=val;
-  const wrap=el.parentElement;
-  wrap.querySelectorAll('.mc-opt').forEach(o=>o.classList.remove('sel'));
+  examAns[qn]=val;
+  el.parentElement.querySelectorAll('.mc-opt').forEach(o=>o.classList.remove('sel'));
   el.classList.add('sel');
 }
 
-function startExamTimer(sec){
-  examLeft=sec; updTimer();
-  examTimer=setInterval(()=>{ examLeft--; updTimer();
-    if(examLeft<=0){ clearInterval(examTimer); autoSubmit(); } },1000);
+function startQTimer(){
+  if(examTimer) clearInterval(examTimer);
+  examLeft=Q_SECONDS; qExtra=false; updTimer();
+  examTimer=setInterval(()=>{
+    examLeft--; updTimer();
+    if(examLeft<=0){
+      if(!qExtra){
+        qExtra=true; examLeft=Q_EXTRA;
+        document.getElementById('e-warn').textContent='⏰ وقت سوال تموم شد! '+faN(Q_EXTRA)+' ثانیه‌ی آخر.';
+        try{ if(tg&&tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('warning'); }catch(e){}
+      } else {
+        clearInterval(examTimer); goNext(true);
+      }
+    }
+  },1000);
 }
 function updTimer(){
   const el=document.getElementById('e-timer');
-  const m=Math.floor(examLeft/60), s=examLeft%60;
-  el.textContent=faN(String(m).padStart(2,'0'))+':'+faN(String(s).padStart(2,'0'));
+  el.textContent=faN(String(examLeft).padStart(2,'0'))+'s';
   el.classList.remove('warn','danger');
-  if(examLeft<=30) el.classList.add('danger'); else if(examLeft<=120) el.classList.add('warn');
+  if(qExtra||examLeft<=10) el.classList.add('danger'); else if(examLeft<=20) el.classList.add('warn');
+}
+
+function nextQuestion(){ goNext(false); }
+function goNext(timedOut){
+  if(examTimer) clearInterval(examTimer);
+  // ثبت زمان این سوال
+  const q=examData.questions[curIdx];
+  if(qStart[q.qnum]) qTimes[q.qnum]=Math.round((Date.now()-qStart[q.qnum])/1000);
+  if(curIdx>=examData.questions.length-1){
+    doSubmit();  // آخرین سوال
+  } else {
+    curIdx++; renderOneQuestion();
+  }
 }
 
 /* ضدتقلب */
@@ -334,34 +362,26 @@ function preventEvt(e){ e.preventDefault(); return false; }
 function onVis(){
   if(document.hidden){
     examExits++;
+    const q=examData.questions[curIdx];
+    if(q){ exitPerQ[q.qnum]=(exitPerQ[q.qnum]||0)+1; }
     try{ if(tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('warning'); }catch(e){}
-  } else {
-    if(examExits>0){
-      // اخطار کوتاه
-      const t=document.getElementById('e-timer');
-    }
   }
 }
 
 let submitting=false;
-async function submitExam(){
-  if(submitting) return;
-  if(!confirm('مطمئنی می‌خوای تحویل بدی؟ بعدش نمی‌تونی تغییر بدی.')) return;
-  doSubmit();
-}
-function autoSubmit(){ if(!submitting){ alert('زمان تموم شد! آزمون تحویل داده می‌شه.'); doSubmit(); } }
+const qTimes={}, exitPerQ={};
+function autoSubmit(){ if(!submitting){ doSubmit(); } }
 async function doSubmit(){
+  if(submitting) return;
   submitting=true;
   if(examTimer) clearInterval(examTimer);
   disableAntiCheat();
-  document.getElementById('btn-submit').disabled=true;
-  document.getElementById('btn-submit').textContent='در حال ثبت...';
-  // زمان هر سوال
-  const qt={};
-  Object.keys(qStart).forEach(qn=>{ qt[qn]=Math.round((Date.now()-qStart[qn])/1000); });
+  const btn=document.getElementById('btn-next');
+  btn.disabled=true; btn.textContent='در حال ثبت...';
   try{
     const r=await api('/api/quiz/student/submit',{
-      quiz_id:examData.quiz_id, answers:examAns, exits:examExits, q_times:qt});
+      quiz_id:examData.quiz_id, answers:examAns, exits:examExits,
+      q_times:qTimes, exit_per_q:exitPerQ});
     document.getElementById('watermark').innerHTML='';
     const sc=r.score100;
     const el=document.getElementById('r-score');
@@ -370,8 +390,7 @@ async function doSubmit(){
     show('screen-result');
   }catch(e){
     alert('خطا در ثبت: '+e.message);
-    document.getElementById('btn-submit').disabled=false;
-    document.getElementById('btn-submit').textContent='تحویل آزمون ✅';
+    btn.disabled=false; btn.textContent='تحویل آزمون ✅';
     submitting=false;
   }
 }
