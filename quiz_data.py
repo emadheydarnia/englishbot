@@ -143,6 +143,46 @@ QUIZZES["exam0"] = {
     ],
 }
 
+QUIZZES["exam2"] = {
+    "title": "Exam 2 (past simple/present simple/present continuous)",
+    "duration_min": 30,
+    "questions": [
+        _q("fill", "Look! Steve ____ with another girl. (DANCE)", "is dancing/'s dancing"),
+        _q("fill", "Joe said something funny and we all ____ . (LAUGH)", "laughed"),
+        _q("fill", "Nick ____ from early morning until late at night every day. (WORK)", "works/worked"),
+        _q("fill", "I was surprised that Allan ____ . (NOT WIN)", "did not win/didn't win"),
+        _q("fill", "Alex was looking for the treasure, but he ____ it. (NOT FIND)", "did not find/didn't find"),
+        _q("fill", "Richard ____ Kate something to drink, but she wasn't thirsty. (OFFER)", "offered"),
+        _q("fill", "Tom is much shorter and ____ much less than Jack. (WEIGH)", "weighs"),
+        _q("fill", "We ____ at home because it's raining. (STAY)", "are staying/'re staying"),
+        _q("fill", "James ____ a love letter to Cindy. (WRITE)", "wrote"),
+        _q("fill", "But he never ____ it to her. (GIVE)", "gave", context="James wrote a love letter to Cindy."),
+        _q("fill", "When was the last time you ____ Christmas with your whole family? (CELEBRATE)", "celebrated"),
+        _q("fill", "Bill typically ____ his work at 2:30. (FINISH)", "finishes"),
+        _q("fill", "Roy ____ to come into the office on Mondays. (NOT NEED)", "does not need/doesn't need"),
+        _q("fill", "In Japan, the new school year ____ in April. (BEGIN)", "begins"),
+        _q("fill", "Could you please be quieter? David ____ . (SLEEP)", "is sleeping/'s sleeping"),
+        _q("fill", "Neil can get there in ten minutes if he ____ fast. (DRIVE)", "drives"),
+        _q("fill", "Why ____ to name your son Simon? (you DECIDE)", "did you decide", needs_ai=True),
+        _q("fill", "Sam ____ his car at least once a week. (WASH)", "washes"),
+        _q("fill", "____ the news on TV every day? (you WATCH)", "do you watch", needs_ai=True),
+        _q("fill", "How often ____ at yourself in the mirror? (you LOOK)", "do you look", needs_ai=True),
+        _q("fill", "Edward ____ that picture last summer. (PAINT)", "painted"),
+        _q("fill", "The girl ____ to her feet. (JUMP)", "jumped"),
+        _q("fill", "And she ____ the room. (LEAVE)", "left", context="The girl jumped to her feet."),
+        _q("fill", "She feeds her dog the same thing that she ____ . (EAT)", "eats"),
+        _q("fill", "Lisa ____ Randy every time she's in the United States. (VISIT)", "visits"),
+        _q("fill", "Do you want to hear about what I ____ last summer? (DO)", "did"),
+        _q("fill", "Alex ____ into bed. (GET)", "got"),
+        _q("fill", "And he ____ the light. (TURN OFF)", "turned off", context="Alex got into bed."),
+        _q("fill", "____ green or black tea? (you PREFER)", "do you prefer", needs_ai=True),
+        _q("fill", "____ anybody who can teach my kids French? (you KNOW)", "do you know", needs_ai=True),
+        _q("fill", "Look at the boy and the dog that ____ over there. (RUN)", "are running/'re running"),
+        _q("fill", "Tom said that he hated the song we ____ last night. (SING)", "sang"),
+        _q("fill", "The weather was cold and it ____ a lot. (RAIN)", "rained"),
+    ],
+}
+
 if __name__ == "__main__":
     for k, v in QUIZZES.items():
         n = len(v['questions'])
