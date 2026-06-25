@@ -96,6 +96,53 @@ QUIZZES["exam1"] = {
     ],
 }
 
+# ══════════════════════════════════════════════════════════════
+# Exam 0 (Tenses structures) — ۱۲ زمان انگلیسی Active
+# جمله‌های پایه: Sarah/study English ، They/build a house ، I/work on the project
+# ══════════════════════════════════════════════════════════════
+QUIZZES["exam0"] = {
+    "title": "Exam 0 (Tenses structures)",
+    "duration_min": 20,
+    "questions": [
+        _q("fill", "Sarah ____ English every single day. (Present Simple)",
+           "studies",
+           context="Base sentence: Sarah / study English"),
+        _q("fill", "Sarah ____ English right now; she is resting. (Present Continuous - negative)",
+           "is not studying/isn't studying",
+           context="Base sentence: Sarah / study English"),
+        _q("fill", "____ English before? (Present Perfect - question)",
+           "Has Sarah studied/has studied", needs_ai=True,
+           context="Base sentence: Sarah / study English   (e.g. Has Sarah studied ...?)"),
+        _q("fill", "Sarah is tired because she ____ English for three hours. (Present Perfect Continuous)",
+           "has been studying",
+           context="Base sentence: Sarah / study English"),
+        _q("fill", "They ____ a house last year; they didn't have enough money. (Past Simple - negative)",
+           "did not build/didn't build",
+           context="Base sentence: They / build a house"),
+        _q("fill", "At this exact time yesterday they ____ a house. (Past Continuous)",
+           "were building",
+           context="Base sentence: They / build a house"),
+        _q("fill", "____ the house before winter arrived? (Past Perfect - question)",
+           "Had they built/had built", needs_ai=True,
+           context="Base sentence: They / build a house   (e.g. Had they built ...?)"),
+        _q("fill", "They ____ the house for months before the storm hit. (Past Perfect Continuous)",
+           "had been building",
+           context="Base sentence: They / build a house"),
+        _q("fill", "I ____ on the project tomorrow because it's a holiday. (Future Simple - negative)",
+           "will not work/won't work",
+           context="Base sentence: I / work on the project"),
+        _q("fill", "This time tomorrow evening I ____ on the project. (Future Continuous)",
+           "will be working",
+           context="Base sentence: I / work on the project"),
+        _q("fill", "____ on the project by next Friday? (Future Perfect - question)",
+           "Will I have worked/will have worked", needs_ai=True,
+           context="Base sentence: I / work on the project   (e.g. Will I have worked ...?)"),
+        _q("fill", "By next month I ____ on the project for half a year. (Future Perfect Continuous)",
+           "will have been working",
+           context="Base sentence: I / work on the project"),
+    ],
+}
+
 if __name__ == "__main__":
     for k, v in QUIZZES.items():
         n = len(v['questions'])
