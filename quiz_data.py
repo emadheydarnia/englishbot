@@ -21,7 +21,7 @@ def _q(qtype, question, answer, options=None, needs_ai=False, context=""):
 # ══════════════════════════════════════════════════════════════
 QUIZZES["exam1"] = {
     "title": "Exam 1 (present simple-continuous)",
-    "duration_min": 20,
+    "duration_min": 30,
     "questions": [
         _q("fill", "You can't see Jimmy now. He ____ a bath. (HAVE)",
            "is having/'s having"),
