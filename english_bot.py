@@ -6597,6 +6597,15 @@ async def api_quiz_index(request):
         return web.FileResponse(path)
     return web.Response(text="Quiz file not found.", status=404)
 
+async def api_quiz_whoami(request):
+    """تشخیص اینکه کاربر معلمه یا دانشجو — برای نمایش صفحه‌ی مناسب."""
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    return web.json_response({"is_teacher": user["id"] == TEACHER_ID})
+
 async def start_web_server(app_ptb):
     """وب‌سرور aiohttp رو کنار bot بالا میاره."""
     try:
@@ -6638,6 +6647,7 @@ async def start_web_server(app_ptb):
     web_app.router.add_post("/api/vm/leaderboard", api_vm_leaderboard)
     # آزمون کلاسی
     web_app.router.add_get("/quiz", api_quiz_index)
+    web_app.router.add_post("/api/quiz/whoami", api_quiz_whoami)
     web_app.router.add_post("/api/quiz/teacher/list", api_quiz_teacher_list)
     web_app.router.add_post("/api/quiz/teacher/activate", api_quiz_teacher_activate)
     web_app.router.add_post("/api/quiz/teacher/deactivate", api_quiz_teacher_deactivate)

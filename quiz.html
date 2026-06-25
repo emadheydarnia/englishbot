@@ -70,6 +70,15 @@
     </div>
     <div id="m-active-box"></div>
   </div>
+
+  <!-- ورود دانشجو (به‌زودی کامل می‌شه) -->
+  <div class="screen" id="screen-student">
+    <div class="msg">📝 برای شرکت در آزمون، کد دسترسی رو از معلمت بگیر.</div>
+    <div style="margin:6px 0 6px;font-size:13px;color:var(--dim);text-align:center">کد دسترسی:</div>
+    <input class="codeinput" id="student-code" placeholder="----" maxlength="20">
+    <button class="btn" onclick="studentEnter()">ورود به آزمون</button>
+    <div class="err" id="student-err"></div>
+  </div>
 </div>
 
 <script>
@@ -147,9 +156,25 @@ async function deactivate(){
   }catch(e){ alert('خطا: '+e.message); }
 }
 
+function studentEnter(){
+  const code=(document.getElementById('student-code').value||'').trim();
+  if(!code){ document.getElementById('student-err').textContent='کد رو وارد کن.'; return; }
+  document.getElementById('student-err').textContent='این بخش به‌زودی فعال می‌شه (تکه ۲).';
+}
+
 // boot
-if(!INIT){ document.getElementById('list-body').innerHTML='<div class="err">لطفاً از داخل تلگرام باز کن.</div>'; }
-else { loadList(); }
+async function boot(){
+  if(!INIT){ document.getElementById('list-body').innerHTML='<div class="err">لطفاً از داخل تلگرام باز کن.</div>'; return; }
+  try{
+    const who=await api('/api/quiz/whoami',{});
+    if(who.is_teacher){ document.getElementById('sub').textContent='پنل معلم'; loadList(); }
+    else { show('screen-student'); document.getElementById('sub').textContent='شرکت در آزمون'; }
+  }catch(e){
+    // اگه نشد، فرض کن دانشجوئه
+    show('screen-student');
+  }
+}
+boot();
 </script>
 </body>
 </html>
