@@ -6,6 +6,10 @@
 <title>Leitner Box — Emad Eng Lab</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
+  /* ZOOM-115: کمی بزرگ‌تر */
+  body{ zoom: 1.15; }
+  @supports not (zoom: 1) { body{ transform: scale(1.15); transform-origin: top center; } }
+
   *{ margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   :root{
     --bg:#0e1726; --panel:#16223a; --panel2:#1d2c49; --line:#27395e;

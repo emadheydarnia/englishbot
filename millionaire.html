@@ -6,6 +6,10 @@
 <title>Millionaire — Emad Eng Lab</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
+  /* ZOOM-115: کمی بزرگ‌تر */
+  body{ zoom: 1.15; }
+  @supports not (zoom: 1) { body{ transform: scale(1.15); transform-origin: top center; } }
+
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   :root{
     --gold:#ffd84d; --orange:#d98a2b; --orange-bright:#ffb347;
