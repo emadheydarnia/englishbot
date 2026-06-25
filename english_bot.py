@@ -22,6 +22,7 @@ MINIAPP_URL = os.environ.get("MINIAPP_URL", "")
 LEITNER_URL = (MINIAPP_URL.rstrip("/") + "/leitner") if MINIAPP_URL else ""
 TD_URL = (MINIAPP_URL.rstrip("/") + "/duel") if MINIAPP_URL else ""
 VM_URL = (MINIAPP_URL.rstrip("/") + "/vocabmillionaire") if MINIAPP_URL else ""
+QUIZ_URL = (MINIAPP_URL.rstrip("/") + "/quiz") if MINIAPP_URL else ""
 TEACHER_ID = int(os.environ.get("TEACHER_ID", "0"))
 EXAM_TIME_MINUTES = int(os.environ.get("EXAM_TIME_MINUTES", "30"))
 import requests
@@ -235,6 +236,46 @@ def init_db():
             )
         """)
         cur.execute("ALTER TABLE vm_progress ADD COLUMN IF NOT EXISTS session TEXT")
+        # ══ آزمون کلاسی (Class Quiz) ══
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS quizzes (
+                id SERIAL PRIMARY KEY,
+                title VARCHAR(200),
+                duration_min INTEGER DEFAULT 20,
+                is_active BOOLEAN DEFAULT FALSE,
+                access_code VARCHAR(20),
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS quiz_questions (
+                id SERIAL PRIMARY KEY,
+                quiz_id INTEGER,
+                qnum INTEGER,
+                qtype VARCHAR(20),
+                question TEXT,
+                options TEXT,
+                answer TEXT,
+                needs_ai BOOLEAN DEFAULT FALSE
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_qq_quiz ON quiz_questions(quiz_id)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS quiz_submissions (
+                id SERIAL PRIMARY KEY,
+                quiz_id INTEGER,
+                telegram_id BIGINT,
+                student_name VARCHAR(120),
+                class_no VARCHAR(40),
+                answers TEXT,
+                score INTEGER,
+                total INTEGER,
+                details TEXT,
+                started_at TIMESTAMP,
+                finished_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_qs_quiz ON quiz_submissions(quiz_id)")
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
         print("DB init error: " + str(e))
@@ -2291,6 +2332,21 @@ IELTS_AI_TOPICS = {
 # اضافه کردن IELTS topics به AI_TOPICS
 AI_TOPICS.update(IELTS_AI_TOPICS)
 
+# ── Oxford Word Skills (Basic) — درس‌ها به‌عنوان topic ثبت می‌شن ──
+try:
+    from ows_data import OWS_BASIC, build_ows_prompt
+    OWS_AI_TOPICS = {}
+    for _ln in sorted(OWS_BASIC.keys()):
+        _key = "ows_" + str(_ln)
+        OWS_AI_TOPICS[_key] = {
+            "label": "📗 " + str(_ln) + ". " + OWS_BASIC[_ln]["title"].replace("I can ", ""),
+            "prompt": build_ows_prompt(_ln),
+        }
+    AI_TOPICS.update(OWS_AI_TOPICS)
+except Exception as _e:
+    print("OWS load error: " + str(_e))
+    OWS_AI_TOPICS = {}
+
 # ── مکالمه تعاملی ──
 GRAMMAR_CONV_TOPICS = {
     "conv_present_simple": {
@@ -2799,9 +2855,18 @@ def speaking_legends_keyboard():
 def vocabulary_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🌍 Topic Related Vocabulary", callback_data="cat_ielts")],
+        [InlineKeyboardButton("📗 Oxford Word Skills (Basic)", callback_data="cat_ows")],
         [InlineKeyboardButton("📖 Vocabulary for IELTS", callback_data="cat_vocab_ielts")],
         [InlineKeyboardButton("🔙 Back", callback_data="cat_a2z")],
     ])
+
+def ows_menu_keyboard():
+    """منوی درس‌های Oxford Word Skills (Basic)"""
+    rows = []
+    for k, v in OWS_AI_TOPICS.items():
+        rows.append([InlineKeyboardButton(v["label"], callback_data="ai_topic_" + k)])
+    rows.append([InlineKeyboardButton("🔙 Back", callback_data="cat_vocabulary")])
+    return InlineKeyboardMarkup(rows)
 
 def ielts_menu_keyboard():
     """منوی فصل‌های Topic Related Vocabulary"""
@@ -3164,6 +3229,40 @@ async def send_question(context, user_id, state):
     )
     await context.bot.send_message(chat_id=user_id, text=text)
 
+def expand_contractions(s):
+    """مخفف‌ها رو در کل جمله باز می‌کنه تا 's having = is having و … خودکار قبول شه."""
+    import re
+    s = " " + s + " "
+    # اول مخفف‌های بدون آپوستروف رو هم به شکل استاندارد بیار (dont → don't)
+    no_apos = [
+        ("dont", "don't"), ("doesnt", "doesn't"), ("didnt", "didn't"),
+        ("isnt", "isn't"), ("arent", "aren't"), ("wasnt", "wasn't"),
+        ("werent", "weren't"), ("havent", "haven't"), ("hasnt", "hasn't"),
+        ("hadnt", "hadn't"), ("wont", "won't"), ("wouldnt", "wouldn't"),
+        ("shouldnt", "shouldn't"), ("cant", "can't"), ("couldnt", "couldn't"),
+        ("mustnt", "mustn't"),
+    ]
+    for bad, good in no_apos:
+        s = re.sub(r"\b" + bad + r"\b", good, s)
+    # مخفف‌های منفی
+    pairs = [
+        (r"\bdon't\b", "do not"), (r"\bdoesn't\b", "does not"), (r"\bdidn't\b", "did not"),
+        (r"\bisn't\b", "is not"), (r"\baren't\b", "are not"), (r"\bwasn't\b", "was not"),
+        (r"\bweren't\b", "were not"), (r"\bhaven't\b", "have not"), (r"\bhasn't\b", "has not"),
+        (r"\bhadn't\b", "had not"), (r"\bwon't\b", "will not"), (r"\bwouldn't\b", "would not"),
+        (r"\bshouldn't\b", "should not"), (r"\bcan't\b", "can not"), (r"\bcannot\b", "can not"),
+        (r"\bcouldn't\b", "could not"), (r"\bmustn't\b", "must not"),
+        # مخفف‌های فعل
+        (r"\bi'm\b", "i am"), (r"\byou're\b", "you are"), (r"\bwe're\b", "we are"),
+        (r"\bthey're\b", "they are"), (r"\bhe's\b", "he is"), (r"\bshe's\b", "she is"),
+        (r"\bit's\b", "it is"), (r"\bthat's\b", "that is"), (r"\bwho's\b", "who is"),
+        (r"\bi've\b", "i have"), (r"\byou've\b", "you have"), (r"\bwe've\b", "we have"),
+        (r"\bthey've\b", "they have"), (r"\bi'll\b", "i will"), (r"\bi'd\b", "i would"),
+    ]
+    for pat, rep in pairs:
+        s = re.sub(pat, rep, s)
+    return s.strip()
+
 EXAM_SYNONYMS = [
     {"anyone", "anybody"},
     {"everyone", "everybody"},
@@ -3187,16 +3286,18 @@ EXAM_SYNONYMS = [
 ]
 
 def normalize_answer(s):
-    """نرمال‌سازی جواب: حروف کوچک، حذف علائم نگارشی ابتدا/انتها، یکدست کردن فاصله و آپوستروف."""
+    """نرمال‌سازی جواب: حروف کوچک، باز کردن مخفف، حذف علائم نگارشی، یکدست کردن فاصله."""
     import re
     s = (s or "").strip().lower()
     s = s.replace("\u2019", "'").replace("\u02bc", "'").replace("`", "'")
     s = s.strip(" .,!?;:\"'()[]")
     s = re.sub(r"\s+", " ", s)
+    s = expand_contractions(s)        # 's having → is having
+    s = re.sub(r"\s+", " ", s).strip()
     return s
 
 def answers_match(given, correct_opts):
-    """آیا جواب کاربر با یکی از جواب‌های درست (با نرمال‌سازی و مترادف) می‌خونه؟"""
+    """آیا جواب کاربر با یکی از جواب‌های درست (با نرمال‌سازی، مخفف، مترادف) می‌خونه؟"""
     g = normalize_answer(given)
     if not g:
         return False
@@ -3948,6 +4049,9 @@ Start the scene now — introduce your character and setting briefly, then begin
 
     elif data == "cat_ielts":
         await query.edit_message_text("🌍 Topic Related Vocabulary\n\nیه فصل انتخاب کن:", reply_markup=ielts_menu_keyboard())
+
+    elif data == "cat_ows":
+        await query.edit_message_text("📗 Oxford Word Skills (Basic)\n\nیه درس انتخاب کن:\n(جمله‌ی فارسی میاد، تو انگلیسی‌اش کن)", reply_markup=ows_menu_keyboard())
 
 
 
@@ -6374,6 +6478,125 @@ async def api_vm_index(request):
         return web.FileResponse(path)
     return web.Response(text="Vocab Millionaire file not found.", status=404)
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ── CLASS QUIZ (آزمون کلاسی) ──────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+import json as _qjson
+
+def quiz_import_from_file():
+    """آزمون‌ها رو از quiz_data.py وارد دیتابیس می‌کنه (با QUIZ_IMPORT=true)."""
+    try:
+        import quiz_data
+    except Exception as e:
+        logger.error("quiz_data.py not found: " + str(e))
+        return
+    try:
+        conn = get_db(); cur = conn.cursor()
+        for key, qz in quiz_data.QUIZZES.items():
+            # آیا این آزمون از قبل هست؟ (بر اساس عنوان)
+            cur.execute("SELECT id FROM quizzes WHERE title=%s", (qz["title"],))
+            row = cur.fetchone()
+            if row:
+                quiz_id = row[0]
+                cur.execute("DELETE FROM quiz_questions WHERE quiz_id=%s", (quiz_id,))
+                cur.execute("UPDATE quizzes SET duration_min=%s WHERE id=%s",
+                            (qz.get("duration_min", 20), quiz_id))
+            else:
+                cur.execute("""INSERT INTO quizzes (title, duration_min, is_active)
+                               VALUES (%s,%s,FALSE) RETURNING id""",
+                            (qz["title"], qz.get("duration_min", 20)))
+                quiz_id = cur.fetchone()[0]
+            for i, q in enumerate(qz["questions"], 1):
+                meta = {"context": q.get("context", "")}
+                opts = _qjson.dumps({"options": q.get("options", []), "context": q.get("context", "")})
+                cur.execute("""INSERT INTO quiz_questions
+                    (quiz_id, qnum, qtype, question, options, answer, needs_ai)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                    (quiz_id, i, q["qtype"], q["question"], opts, q["answer"], q.get("needs_ai", False)))
+        conn.commit(); cur.close(); conn.close()
+        logger.info("Quizzes imported.")
+    except Exception as e:
+        logger.error("quiz_import error: " + str(e))
+
+def quiz_list_all():
+    try:
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""SELECT q.id, q.title, q.duration_min, q.is_active, q.access_code,
+                       (SELECT COUNT(*) FROM quiz_questions WHERE quiz_id=q.id) as nq,
+                       (SELECT COUNT(*) FROM quiz_submissions WHERE quiz_id=q.id) as nsub
+                       FROM quizzes q ORDER BY q.id""")
+        rows = cur.fetchall(); cur.close(); conn.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error("quiz_list_all error: " + str(e))
+        return []
+
+def quiz_get(quiz_id):
+    try:
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM quizzes WHERE id=%s", (quiz_id,))
+        qz = cur.fetchone()
+        if not qz:
+            cur.close(); conn.close(); return None
+        cur.execute("SELECT * FROM quiz_questions WHERE quiz_id=%s ORDER BY qnum", (quiz_id,))
+        qs = cur.fetchall(); cur.close(); conn.close()
+        return {"quiz": dict(qz), "questions": [dict(q) for q in qs]}
+    except Exception as e:
+        logger.error("quiz_get error: " + str(e))
+        return None
+
+def quiz_gen_code():
+    import random as _r
+    return str(_r.randint(1000, 9999))
+
+# ── API معلم ──
+async def api_quiz_teacher_list(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user or user["id"] != TEACHER_ID:
+        return web.json_response({"error": "teacher_only"}, status=403)
+    return web.json_response({"quizzes": quiz_list_all(), "suggested_code": quiz_gen_code()})
+
+async def api_quiz_teacher_activate(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user or user["id"] != TEACHER_ID:
+        return web.json_response({"error": "teacher_only"}, status=403)
+    quiz_id = data.get("quiz_id")
+    code = str(data.get("code", "")).strip() or quiz_gen_code()
+    try:
+        conn = get_db(); cur = conn.cursor()
+        # فقط یک آزمون هم‌زمان فعال باشه؟ نه — اجازه می‌دیم چندتا، ولی کد یکتا
+        cur.execute("UPDATE quizzes SET is_active=TRUE, access_code=%s WHERE id=%s", (code, quiz_id))
+        conn.commit(); cur.close(); conn.close()
+        return web.json_response({"ok": True, "code": code})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+async def api_quiz_teacher_deactivate(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user or user["id"] != TEACHER_ID:
+        return web.json_response({"error": "teacher_only"}, status=403)
+    quiz_id = data.get("quiz_id")
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("UPDATE quizzes SET is_active=FALSE WHERE id=%s", (quiz_id,))
+        conn.commit(); cur.close(); conn.close()
+        return web.json_response({"ok": True})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+async def api_quiz_index(request):
+    from aiohttp import web
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quiz.html")
+    if os.path.exists(path):
+        return web.FileResponse(path)
+    return web.Response(text="Quiz file not found.", status=404)
+
 async def start_web_server(app_ptb):
     """وب‌سرور aiohttp رو کنار bot بالا میاره."""
     try:
@@ -6413,6 +6636,11 @@ async def start_web_server(app_ptb):
     web_app.router.add_post("/api/vm/start", api_vm_start)
     web_app.router.add_post("/api/vm/answer", api_vm_answer)
     web_app.router.add_post("/api/vm/leaderboard", api_vm_leaderboard)
+    # آزمون کلاسی
+    web_app.router.add_get("/quiz", api_quiz_index)
+    web_app.router.add_post("/api/quiz/teacher/list", api_quiz_teacher_list)
+    web_app.router.add_post("/api/quiz/teacher/activate", api_quiz_teacher_activate)
+    web_app.router.add_post("/api/quiz/teacher/deactivate", api_quiz_teacher_deactivate)
     runner = web.AppRunner(web_app)
     await runner.setup()
     port = int(os.environ.get("PORT", "8080"))
@@ -6832,6 +7060,21 @@ async def leitner_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """باز کردن پنل آزمون کلاسی (معلم) — Mini App."""
+    if not QUIZ_URL:
+        await update.message.reply_text("📝 Quiz app is not configured yet (MINIAPP_URL missing).")
+        return
+    if update.effective_user.id != TEACHER_ID:
+        await update.message.reply_text("🚫 این بخش فقط برای معلم است.")
+        return
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("📝 باز کردن پنل آزمون", web_app=WebAppInfo(url=QUIZ_URL))]])
+    await update.message.reply_text(
+        "📝 پنل آزمون کلاسی\n\nاینجا می‌تونی آزمون‌ها رو فعال/غیرفعال کنی و کد بدی:",
+        reply_markup=kb
+    )
+
+
 def main():
     init_db()
     # پر کردن یک‌باره‌ی بانک سوالات اگه خالیه (در صورت تنظیم env)
@@ -6858,6 +7101,12 @@ def main():
             vm_bootstrap_bank()
         except Exception as e:
             logger.error("vm bootstrap failed: " + str(e))
+    # وارد کردن آزمون‌های کلاسی از فایل (با QUIZ_IMPORT=true)
+    if os.environ.get("QUIZ_IMPORT", "").lower() in ("1", "true", "yes"):
+        try:
+            quiz_import_from_file()
+        except Exception as e:
+            logger.error("quiz import failed: " + str(e))
     app = Application.builder().token(BOT_TOKEN).post_init(_on_post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
@@ -6880,6 +7129,7 @@ def main():
     app.add_handler(CommandHandler("testreport", testreport_cmd))
     app.add_handler(CommandHandler("tdstats", tdstats_cmd))
     app.add_handler(CommandHandler("vmstats", vmstats_cmd))
+    app.add_handler(CommandHandler("quiz", quiz_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, champion_photo_handler))
     app.add_handler(CallbackQueryHandler(button_handler))

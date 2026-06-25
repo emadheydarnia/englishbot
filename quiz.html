@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Class Quiz — Emad Eng Lab</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  :root{
+    --bg:#0f1729; --panel:#1a2540; --panel2:#243150; --line:#2f3f63;
+    --accent:#4f8cff; --gold:#ffd84d; --green:#36c46a; --red:#e25563;
+    --text:#eaf1ff; --dim:#9fb3d4;
+  }
+  html,body{ height:100%; }
+  body{ font-family:'Segoe UI',Tahoma,sans-serif;
+    background:radial-gradient(circle at 50% 0%, #1a2c52, #0f1729 60%); color:var(--text); }
+  #app{ max-width:480px; margin:0 auto; min-height:100vh; display:flex; flex-direction:column; }
+  header{ padding:16px; text-align:center; border-bottom:1px solid var(--line); }
+  header h1{ font-size:19px; color:var(--gold); }
+  header .sub{ font-size:12px; color:var(--dim); margin-top:3px; }
+  .screen{ flex:1; padding:16px; display:none; }
+  .screen.active{ display:block; }
+  .btn{ background:linear-gradient(#5b96ff,#3f7ae8); color:#fff; border:none; border-radius:12px;
+    padding:13px; font-size:15px; font-weight:700; cursor:pointer; width:100%; margin-top:10px; font-family:inherit; }
+  .btn:active{ transform:scale(.98); }
+  .btn.green{ background:linear-gradient(#42c46a,#2a9d4f); }
+  .btn.red{ background:linear-gradient(#e25563,#c13c49); }
+  .btn.sec{ background:var(--panel2); border:1px solid var(--line); color:var(--text); }
+  .card{ background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px; }
+  .quiz-row{ display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .quiz-info{ flex:1; min-width:0; }
+  .quiz-title{ font-size:14px; font-weight:600; }
+  .quiz-meta{ font-size:11.5px; color:var(--dim); margin-top:3px; }
+  .badge{ font-size:11px; padding:3px 10px; border-radius:20px; font-weight:700; white-space:nowrap; }
+  .badge.on{ background:rgba(54,196,106,.18); color:var(--green); border:1px solid var(--green); }
+  .badge.off{ background:rgba(159,179,212,.12); color:var(--dim); border:1px solid var(--line); }
+  .code-box{ background:var(--panel2); border:1px dashed var(--gold); border-radius:10px; padding:10px;
+    text-align:center; margin:10px 0; }
+  .code-box .code{ font-size:26px; font-weight:800; color:var(--gold); letter-spacing:4px; direction:ltr; }
+  .code-box .lbl{ font-size:11px; color:var(--dim); }
+  input.codeinput{ width:100%; background:var(--panel2); border:1px solid var(--line); border-radius:10px;
+    padding:11px; color:var(--text); font-size:18px; text-align:center; direction:ltr; letter-spacing:3px; font-family:inherit; }
+  .msg{ text-align:center; color:var(--dim); font-size:13px; padding:24px 10px; line-height:1.8; }
+  .spinner{ width:34px; height:34px; border:3px solid var(--line); border-top-color:var(--gold);
+    border-radius:50%; animation:spin 1s linear infinite; margin:30px auto; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  .back{ font-size:13px; color:var(--accent); cursor:pointer; margin-bottom:12px; display:inline-block; }
+  .err{ color:var(--red); font-size:13px; text-align:center; margin-top:8px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>📝 Class Quiz</h1>
+    <div class="sub" id="sub">آزمون‌های کلاس</div>
+  </header>
+
+  <!-- لیست آزمون‌ها (معلم) -->
+  <div class="screen active" id="screen-list">
+    <div id="list-body"><div class="spinner"></div></div>
+  </div>
+
+  <!-- مدیریت یک آزمون (معلم) -->
+  <div class="screen" id="screen-manage">
+    <span class="back" onclick="showList()">← بازگشت</span>
+    <div class="card">
+      <div class="quiz-title" id="m-title">—</div>
+      <div class="quiz-meta" id="m-meta">—</div>
+    </div>
+    <div id="m-active-box"></div>
+  </div>
+</div>
+
+<script>
+const tg = window.Telegram ? window.Telegram.WebApp : null;
+if(tg){ tg.ready(); tg.expand(); }
+const INIT = tg ? tg.initData : "";
+let QUIZZES=[], SUGGESTED="", curQuiz=null;
+
+async function api(path, body){
+  const res=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(Object.assign({initData:INIT}, body||{}))});
+  if(!res.ok){ const e=await res.json().catch(()=>({error:'http_'+res.status})); throw new Error(e.error||'error'); }
+  return res.json();
+}
+function show(id){ document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  document.getElementById(id).classList.add('active'); }
+function esc(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function loadList(){
+  const body=document.getElementById('list-body');
+  body.innerHTML='<div class="spinner"></div>';
+  try{
+    const r=await api('/api/quiz/teacher/list',{});
+    QUIZZES=r.quizzes; SUGGESTED=r.suggested_code;
+    document.getElementById('sub').textContent='پنل معلم · '+QUIZZES.length+' آزمون';
+    if(!QUIZZES.length){ body.innerHTML='<div class="msg">هنوز آزمونی وارد نشده.<br>با QUIZ_IMPORT=true آزمون‌ها رو وارد کن.</div>'; return; }
+    body.innerHTML=QUIZZES.map(q=>
+      '<div class="card quiz-row" onclick="openQuiz('+q.id+')">'+
+        '<div class="quiz-info"><div class="quiz-title">'+esc(q.title)+'</div>'+
+        '<div class="quiz-meta">'+q.nq+' سوال · '+q.duration_min+' دقیقه · '+q.nsub+' پاسخ</div></div>'+
+        '<span class="badge '+(q.is_active?'on':'off')+'">'+(q.is_active?'🟢 فعال':'🔒 قفل')+'</span>'+
+      '</div>').join('');
+  }catch(e){
+    if(e.message==='teacher_only'){ body.innerHTML='<div class="msg">🔒 این پنل فقط برای معلم است.</div>'; return; }
+    body.innerHTML='<div class="err">خطا: '+e.message+'</div>';
+  }
+}
+function showList(){ show('screen-list'); loadList(); }
+
+function openQuiz(id){
+  curQuiz=QUIZZES.find(q=>q.id===id);
+  if(!curQuiz) return;
+  show('screen-manage');
+  document.getElementById('m-title').textContent=curQuiz.title;
+  document.getElementById('m-meta').textContent=curQuiz.nq+' سوال · '+curQuiz.duration_min+' دقیقه · '+curQuiz.nsub+' پاسخ ثبت‌شده';
+  renderActiveBox();
+}
+function renderActiveBox(){
+  const box=document.getElementById('m-active-box');
+  if(curQuiz.is_active){
+    box.innerHTML=
+      '<div class="code-box"><div class="lbl">کد دسترسی فعلی</div><div class="code">'+esc(curQuiz.access_code||'----')+'</div></div>'+
+      '<div class="msg" style="padding:8px">این کد رو به دانشجوها بده. وقتی آزمون تموم شد، غیرفعالش کن.</div>'+
+      '<button class="btn red" onclick="deactivate()">🔒 غیرفعال کردن آزمون</button>';
+  } else {
+    box.innerHTML=
+      '<div style="margin:10px 0 6px;font-size:13px;color:var(--dim)">کد دسترسی (می‌تونی عوضش کنی):</div>'+
+      '<input class="codeinput" id="codein" value="'+esc(SUGGESTED)+'" maxlength="20">'+
+      '<button class="btn green" onclick="activate()">🟢 فعال کردن آزمون</button>';
+  }
+}
+async function activate(){
+  const code=(document.getElementById('codein').value||'').trim();
+  try{
+    const r=await api('/api/quiz/teacher/activate',{quiz_id:curQuiz.id, code:code});
+    curQuiz.is_active=true; curQuiz.access_code=r.code;
+    renderActiveBox();
+  }catch(e){ alert('خطا: '+e.message); }
+}
+async function deactivate(){
+  try{
+    await api('/api/quiz/teacher/deactivate',{quiz_id:curQuiz.id});
+    curQuiz.is_active=false;
+    renderActiveBox();
+  }catch(e){ alert('خطا: '+e.message); }
+}
+
+// boot
+if(!INIT){ document.getElementById('list-body').innerHTML='<div class="err">لطفاً از داخل تلگرام باز کن.</div>'; }
+else { loadList(); }
+</script>
+</body>
+</html>
