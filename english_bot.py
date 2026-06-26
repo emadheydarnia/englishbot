@@ -281,6 +281,13 @@ def init_db():
             )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_qs_quiz ON quiz_submissions(quiz_id)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS quiz_students (
+                telegram_id BIGINT PRIMARY KEY,
+                student_name VARCHAR(120),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
         # شماره‌ی جلسه: هر بار فعال‌سازی یک جلسه‌ی جدید
         cur.execute("ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS current_session INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS seconds_per_q INTEGER DEFAULT 60")
@@ -7018,6 +7025,36 @@ def _quiz_active_by_code(code):
 QUIZ_STUDENT_SESSIONS = {}
 _PTB_APP = None  # رفرنس به اپلیکیشن تلگرام برای ارسال فایل از web endpoint
 
+def quiz_student_get_name(telegram_id):
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT student_name FROM quiz_students WHERE telegram_id=%s", (telegram_id,))
+        row = cur.fetchone(); cur.close(); conn.close()
+        return row[0] if row and row[0] else ""
+    except Exception as e:
+        logger.error("quiz_student_get_name error: " + str(e))
+        return ""
+
+def quiz_student_save_name(telegram_id, name):
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("""INSERT INTO quiz_students (telegram_id, student_name, updated_at)
+                       VALUES (%s,%s,NOW())
+                       ON CONFLICT (telegram_id) DO UPDATE SET
+                         student_name=EXCLUDED.student_name, updated_at=NOW()""",
+                    (telegram_id, name))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        logger.error("quiz_student_save_name error: " + str(e))
+
+async def api_quiz_student_me(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    return web.json_response({"name": quiz_student_get_name(user["id"])})
+
 async def api_quiz_student_classes(request):
     """لیست کلاس‌ها برای دانشجو."""
     from aiohttp import web
@@ -7104,8 +7141,11 @@ async def api_quiz_student_start(request):
     code = str(data.get("code", "")).strip()
     name = str(data.get("name", "")).strip()[:120]
     class_no = str(data.get("class_no", "")).strip()[:40]
+    if not name:
+        name = quiz_student_get_name(user["id"])
     if not name or not class_no:
         return web.json_response({"error": "need_info"}, status=400)
+    quiz_student_save_name(user["id"], name)
     qz = _quiz_active_by_code(code)
     if not qz:
         return web.json_response({"error": "bad_code"}, status=404)
@@ -7277,6 +7317,7 @@ async def start_web_server(app_ptb):
     # آزمون کلاسی
     web_app.router.add_get("/quiz", api_quiz_index)
     web_app.router.add_post("/api/quiz/whoami", api_quiz_whoami)
+    web_app.router.add_post("/api/quiz/student/me", api_quiz_student_me)
     web_app.router.add_post("/api/quiz/student/classes", api_quiz_student_classes)
     web_app.router.add_post("/api/quiz/student/class_exams", api_quiz_student_class_exams)
     web_app.router.add_post("/api/quiz/student/enter", api_quiz_student_enter)

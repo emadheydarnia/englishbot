@@ -243,7 +243,7 @@ async function deactivate(){
 }
 
 /* ---------- دانشجو ---------- */
-let MY_CLASS="";
+let MY_CLASS=""; let SAVED_NAME="";
 async function loadStudentClasses(){
   const box=document.getElementById('class-list');
   box.innerHTML='<div class="spinner"></div>';
@@ -299,6 +299,10 @@ async function studentEnter(){
     curQuiz={id:r.quiz_id, title:r.title, code:code};
     document.getElementById('i-title').textContent=r.title;
     document.getElementById('i-meta').textContent=faN(r.num_questions)+' سوال · کلاس '+esc(MY_CLASS);
+    let me={name:""};
+    try{ me=await api('/api/quiz/student/me',{}); }catch(e){}
+    SAVED_NAME=(me&&me.name)?me.name:"";
+    if(SAVED_NAME){ document.getElementById('i-name').value=SAVED_NAME; }
     show('screen-info');
   }catch(e){
     if(e.message==='bad_code') errEl.textContent='کد اشتباهه یا آزمون فعال نیست.';
