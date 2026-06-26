@@ -103,16 +103,32 @@
     <div id="m-active-box"></div>
   </div>
 
-  <!-- ورود دانشجو با کد -->
+  <!-- مرحله ۱: انتخاب کلاس -->
+  <div class="screen" id="screen-class">
+    <div class="msg">👋 اول کلاست رو انتخاب کن.</div>
+    <div id="class-list"><div class="spinner"></div></div>
+  </div>
+
+  <!-- مرحله ۲: لیست آزمون‌های کلاس -->
+  <div class="screen" id="screen-exams">
+    <span class="back" onclick="backToClasses()">← تغییر کلاس</span>
+    <div class="quiz-title" id="ex-classname" style="margin-bottom:10px">—</div>
+    <div id="exam-list"><div class="spinner"></div></div>
+  </div>
+
+  <!-- مرحله ۳: ورود کد -->
   <div class="screen" id="screen-student">
-    <div class="msg">📝 برای شرکت در آزمون، کد دسترسی رو از معلمت بگیر.</div>
-    <label class="fld">کد دسترسی:</label>
+    <span class="back" onclick="backToExams()">← بازگشت</span>
+    <div class="card">
+      <div class="quiz-title" id="s-title">—</div>
+    </div>
+    <label class="fld">کد دسترسی (از معلم بگیر):</label>
     <input class="in codeinput" id="student-code" placeholder="----" maxlength="20" inputmode="numeric">
     <button class="btn" id="btn-enter" onclick="studentEnter()">بررسی کد</button>
     <div class="err" id="student-err"></div>
   </div>
 
-  <!-- اطلاعات دانشجو (اسم + کلاس) -->
+  <!-- مرحله ۴: اسم -->
   <div class="screen" id="screen-info">
     <div class="card">
       <div class="quiz-title" id="i-title">—</div>
@@ -120,8 +136,6 @@
     </div>
     <label class="fld">نام و نام خانوادگی:</label>
     <input class="in" id="i-name" placeholder="مثلاً علی رضایی">
-    <label class="fld">شماره کلاس:</label>
-    <input class="in" id="i-class" placeholder="مثلاً 1404">
     <button class="btn green" id="btn-begin" onclick="beginExam()">شروع آزمون ▶️</button>
     <div class="msg" style="padding:10px;font-size:12px">⚠️ با شروع آزمون، تایمر شروع می‌شه و کپی/پیست غیرفعاله.</div>
     <div class="err" id="info-err"></div>
@@ -155,7 +169,7 @@
 const tg = window.Telegram ? window.Telegram.WebApp : null;
 if(tg){ tg.ready(); tg.expand(); }
 const INIT = tg ? tg.initData : "";
-let QUIZZES=[], SUGGESTED="", curQuiz=null;
+let QUIZZES=[], SUGGESTED="", curQuiz=null, CLASSES=[];
 let examData=null, examAns={}, examTimer=null, examLeft=0, examExits=0, qStart={}, examActiveQ=null;
 
 async function api(path, body){
@@ -175,14 +189,14 @@ async function loadList(){
   body.innerHTML='<div class="spinner"></div>';
   try{
     const r=await api('/api/quiz/teacher/list',{});
-    QUIZZES=r.quizzes; SUGGESTED=r.suggested_code;
+    QUIZZES=r.quizzes; SUGGESTED=r.suggested_code; CLASSES=r.classes||[];
     document.getElementById('sub').textContent='پنل معلم · '+QUIZZES.length+' آزمون';
     if(!QUIZZES.length){ body.innerHTML='<div class="msg">هنوز آزمونی وارد نشده.</div>'; return; }
     body.innerHTML=QUIZZES.map(q=>
       '<div class="card quiz-row" onclick="openQuiz('+q.id+')">'+
         '<div class="quiz-info"><div class="quiz-title">'+esc(q.title)+'</div>'+
         '<div class="quiz-meta">'+faN(q.nq)+' سوال · '+faN(q.duration_min)+' دقیقه · '+faN(q.nsub)+' پاسخ</div></div>'+
-        '<span class="badge '+(q.is_active?'on':'off')+'">'+(q.is_active?'🟢 فعال':'🔒 قفل')+'</span>'+
+        '<span class="badge '+(q.is_active?'on':'off')+'">'+(q.is_active?('🟢 '+esc(q.active_class||'فعال')):'🔒 قفل')+'</span>'+
       '</div>').join('');
   }catch(e){
     if(e.message==='teacher_only'){ body.innerHTML='<div class="msg">🔒 این پنل فقط برای معلم است.</div>'; return; }
@@ -200,11 +214,15 @@ function openQuiz(id){
 function renderActiveBox(){
   const box=document.getElementById('m-active-box');
   if(curQuiz.is_active){
-    box.innerHTML='<div class="code-box"><div class="lbl">کد دسترسی فعلی</div><div class="code">'+esc(curQuiz.access_code||'----')+'</div></div>'+
-      '<div class="msg" style="padding:8px">این کد رو به دانشجوها بده. وقتی تموم شد، غیرفعالش کن.</div>'+
+    box.innerHTML='<div class="code-box"><div class="lbl">کلاس فعال</div><div class="code" style="font-size:18px">'+esc(curQuiz.active_class||'-')+'</div></div>'+
+      '<div class="code-box"><div class="lbl">کد دسترسی</div><div class="code">'+esc(curQuiz.access_code||'----')+'</div></div>'+
+      '<div class="msg" style="padding:8px">این کد رو به دانشجوهای کلاس بده. وقتی تموم شد، غیرفعالش کن.</div>'+
       '<button class="btn red" onclick="deactivate()">🔒 غیرفعال کردن</button>';
   } else {
-    box.innerHTML='<div style="margin:10px 0 6px;font-size:13px;color:var(--dim)">کد دسترسی (قابل تغییر):</div>'+
+    var opts=CLASSES.map(function(c){return '<option value="'+esc(c)+'">'+esc(c)+'</option>';}).join('');
+    box.innerHTML='<div style="margin:10px 0 6px;font-size:13px;color:var(--dim)">کلاس:</div>'+
+      '<select class="in" id="classsel">'+opts+'</select>'+
+      '<div style="margin:12px 0 6px;font-size:13px;color:var(--dim)">کد دسترسی (قابل تغییر):</div>'+
       '<input class="in codeinput" id="codein" value="'+esc(SUGGESTED)+'" maxlength="20">'+
       '<button class="btn green" onclick="activate()">🟢 فعال کردن</button>'+
       '<div class="msg" style="padding:8px;font-size:12px">با فعال کردن این، بقیه‌ی آزمون‌ها قفل می‌شن.</div>';
@@ -212,8 +230,10 @@ function renderActiveBox(){
 }
 async function activate(){
   const code=(document.getElementById('codein').value||'').trim();
-  try{ const r=await api('/api/quiz/teacher/activate',{quiz_id:curQuiz.id, code:code});
-    curQuiz.is_active=true; curQuiz.access_code=r.code; renderActiveBox();
+  const klass=(document.getElementById('classsel').value||'').trim();
+  if(!klass){ alert('کلاس رو انتخاب کن.'); return; }
+  try{ const r=await api('/api/quiz/teacher/activate',{quiz_id:curQuiz.id, code:code, class_no:klass});
+    curQuiz.is_active=true; curQuiz.access_code=r.code; curQuiz.active_class=r.class_no; renderActiveBox(); 
   }catch(e){ alert('خطا: '+e.message); }
 }
 async function deactivate(){
@@ -223,33 +243,81 @@ async function deactivate(){
 }
 
 /* ---------- دانشجو ---------- */
+let MY_CLASS="";
+async function loadStudentClasses(){
+  const box=document.getElementById('class-list');
+  box.innerHTML='<div class="spinner"></div>';
+  try{
+    const r=await api('/api/quiz/student/classes',{});
+    const cls=r.classes||[];
+    box.innerHTML=cls.map(function(c){
+      return '<div class="card quiz-row" onclick="pickClass(\''+c.replace(/'/g,"")+'\')">'+
+        '<div class="quiz-info"><div class="quiz-title">'+esc(c)+'</div></div>'+
+        '<span style="color:var(--accent)">›</span></div>';
+    }).join('');
+  }catch(e){ box.innerHTML='<div class="err">خطا: '+e.message+'</div>'; }
+}
+function backToClasses(){ show('screen-class'); }
+function backToExams(){ show('screen-exams'); }
+async function pickClass(c){
+  MY_CLASS=c;
+  document.getElementById('ex-classname').textContent='کلاس: '+c;
+  show('screen-exams');
+  const box=document.getElementById('exam-list');
+  box.innerHTML='<div class="spinner"></div>';
+  try{
+    const r=await api('/api/quiz/student/class_exams',{class_no:c});
+    const ex=r.exams||[];
+    if(!ex.length){ box.innerHTML='<div class="msg">هنوز آزمونی نیست.</div>'; return; }
+    box.innerHTML=ex.map(function(q){
+      var badge, click='', cls='card quiz-row';
+      if(q.done_by_me){ badge='<span class="badge on">✅ دادی</span>'; }
+      else if(q.status==='open'){ badge='<span class="badge on">🟢 باز</span>'; click='onclick="pickExam('+q.quiz_id+',\''+esc(q.title).replace(/'/g,"")+'\')"'; }
+      else if(q.status==='held'){ badge='<span class="badge off">✅ برگزار شد</span>'; }
+      else { badge='<span class="badge off">🔒 قفل</span>'; }
+      return '<div class="'+cls+'" '+click+'>'+
+        '<div class="quiz-info"><div class="quiz-title">'+esc(q.title)+'</div>'+
+        '<div class="quiz-meta">'+faN(q.nq)+' سوال</div></div>'+badge+'</div>';
+    }).join('');
+  }catch(e){ box.innerHTML='<div class="err">خطا: '+e.message+'</div>'; }
+}
+function pickExam(qid,title){
+  curQuiz={id:qid, title:title, code:''};
+  document.getElementById('s-title').textContent=title;
+  document.getElementById('student-code').value='';
+  document.getElementById('student-err').textContent='';
+  show('screen-student');
+}
+
 async function studentEnter(){
   const code=(document.getElementById('student-code').value||'').trim();
   const errEl=document.getElementById('student-err'); errEl.textContent='';
   if(!code){ errEl.textContent='کد رو وارد کن.'; return; }
   document.getElementById('btn-enter').disabled=true;
   try{
-    const r=await api('/api/quiz/student/enter',{code:code});
+    const r=await api('/api/quiz/student/enter',{code:code, class_no:MY_CLASS});
     curQuiz={id:r.quiz_id, title:r.title, code:code};
     document.getElementById('i-title').textContent=r.title;
-    document.getElementById('i-meta').textContent=faN(r.num_questions)+' سوال · '+faN(r.duration_min)+' دقیقه';
+    document.getElementById('i-meta').textContent=faN(r.num_questions)+' سوال · کلاس '+esc(MY_CLASS);
     show('screen-info');
   }catch(e){
     if(e.message==='bad_code') errEl.textContent='کد اشتباهه یا آزمون فعال نیست.';
     else if(e.message==='already_done') errEl.textContent='تو قبلاً این آزمون رو دادی.';
+    else if(e.message==='wrong_class') errEl.textContent='این کد برای کلاس تو نیست.';
     else errEl.textContent='خطا: '+e.message;
   }finally{ document.getElementById('btn-enter').disabled=false; }
 }
 
 async function beginExam(){
   const name=(document.getElementById('i-name').value||'').trim();
-  const cls=(document.getElementById('i-class').value||'').trim();
+  const cls=MY_CLASS;
   const errEl=document.getElementById('info-err'); errEl.textContent='';
-  if(!name || !cls){ errEl.textContent='اسم و شماره کلاس رو پر کن.'; return; }
+  if(!name){ errEl.textContent='اسمت رو پر کن.'; return; }
   document.getElementById('btn-begin').disabled=true;
   try{
     const r=await api('/api/quiz/student/start',{code:curQuiz.code, name:name, class_no:cls});
     examData=r; examAns={}; examExits=0; qStart={}; curIdx=0; qExtra=false;
+    if(r.seconds_per_q) Q_SECONDS=r.seconds_per_q;
     setupWatermark(r.watermark);
     show('screen-exam');
     enableAntiCheat();
@@ -272,7 +340,7 @@ function setupWatermark(text){
   }
 }
 
-const Q_SECONDS=60, Q_EXTRA=15;
+let Q_SECONDS=60; const Q_EXTRA=15;
 let curIdx=0, qExtra=false;
 
 function renderOneQuestion(){
@@ -405,8 +473,8 @@ async function boot(){
   try{
     const who=await api('/api/quiz/whoami',{});
     if(who.is_teacher){ document.getElementById('sub').textContent='پنل معلم'; loadList(); }
-    else { show('screen-student'); document.getElementById('sub').textContent='شرکت در آزمون'; }
-  }catch(e){ show('screen-student'); }
+    else { show('screen-class'); document.getElementById('sub').textContent='شرکت در آزمون'; loadStudentClasses(); }
+  }catch(e){ show('screen-class'); loadStudentClasses(); }
 }
 boot();
 </script>

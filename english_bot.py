@@ -24,6 +24,11 @@ TD_URL = (MINIAPP_URL.rstrip("/") + "/duel") if MINIAPP_URL else ""
 VM_URL = (MINIAPP_URL.rstrip("/") + "/vocabmillionaire") if MINIAPP_URL else ""
 QUIZ_URL = (MINIAPP_URL.rstrip("/") + "/quiz") if MINIAPP_URL else ""
 TEACHER_ID = int(os.environ.get("TEACHER_ID", "0"))
+
+# لیست کلاس‌ها (داینامیک نیست ولی این‌جا متمرکزه؛ راحت می‌شه کم/زیاد کرد)
+QUIZ_CLASSES = ["A2Z 17", "A2Z 18", "A2Z 19", "A2Z 20", "A2Z 21", "A2Z 22",
+                "A2Z 23", "A2Z 24", "A2Z 25", "A2Z 26", "A2Z 27", "A2Z 28",
+                "A2Z 29", "A2Z 30"]
 EXAM_TIME_MINUTES = int(os.environ.get("EXAM_TIME_MINUTES", "30"))
 import requests
 
@@ -278,6 +283,8 @@ def init_db():
         cur.execute("CREATE INDEX IF NOT EXISTS idx_qs_quiz ON quiz_submissions(quiz_id)")
         # شماره‌ی جلسه: هر بار فعال‌سازی یک جلسه‌ی جدید
         cur.execute("ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS current_session INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS seconds_per_q INTEGER DEFAULT 60")
+        cur.execute("ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS active_class VARCHAR(40)")
         cur.execute("ALTER TABLE quiz_submissions ADD COLUMN IF NOT EXISTS session_id INTEGER DEFAULT 0")
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
@@ -6502,12 +6509,12 @@ def quiz_import_from_file():
             if row:
                 quiz_id = row[0]
                 cur.execute("DELETE FROM quiz_questions WHERE quiz_id=%s", (quiz_id,))
-                cur.execute("UPDATE quizzes SET duration_min=%s WHERE id=%s",
-                            (qz.get("duration_min", 20), quiz_id))
+                cur.execute("UPDATE quizzes SET duration_min=%s, seconds_per_q=%s WHERE id=%s",
+                            (qz.get("duration_min", 20), qz.get("seconds_per_q", 60), quiz_id))
             else:
-                cur.execute("""INSERT INTO quizzes (title, duration_min, is_active)
-                               VALUES (%s,%s,FALSE) RETURNING id""",
-                            (qz["title"], qz.get("duration_min", 20)))
+                cur.execute("""INSERT INTO quizzes (title, duration_min, is_active, seconds_per_q)
+                               VALUES (%s,%s,FALSE,%s) RETURNING id""",
+                            (qz["title"], qz.get("duration_min", 20), qz.get("seconds_per_q", 60)))
                 quiz_id = cur.fetchone()[0]
             for i, q in enumerate(qz["questions"], 1):
                 meta = {"context": q.get("context", "")}
@@ -6524,7 +6531,7 @@ def quiz_import_from_file():
 def quiz_list_all():
     try:
         conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("""SELECT q.id, q.title, q.duration_min, q.is_active, q.access_code,
+        cur.execute("""SELECT q.id, q.title, q.duration_min, q.is_active, q.access_code, q.active_class,
                        (SELECT COUNT(*) FROM quiz_questions WHERE quiz_id=q.id) as nq,
                        (SELECT COUNT(*) FROM quiz_submissions WHERE quiz_id=q.id) as nsub
                        FROM quizzes q ORDER BY q.id""")
@@ -6588,6 +6595,96 @@ def _fa(text):
         return get_display(arabic_reshaper.reshape(s))
     except Exception:
         return s
+
+def class_report_data(class_no):
+    conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT id, title FROM quizzes ORDER BY id")
+    quizzes = [dict(r) for r in cur.fetchall()]
+    cur.execute("""SELECT telegram_id, student_name, quiz_id, score, total, finished_at
+                   FROM quiz_submissions WHERE class_no=%s ORDER BY finished_at ASC""", (class_no,))
+    subs = [dict(r) for r in cur.fetchall()]
+    cur.close(); conn.close()
+    students = {}
+    for sb in subs:
+        tid = sb["telegram_id"]
+        if tid not in students:
+            students[tid] = {"name": sb["student_name"], "scores": {}}
+        students[tid]["name"] = sb["student_name"]
+        pct = round(sb["score"] * 100.0 / sb["total"]) if sb["total"] else 0
+        students[tid]["scores"][sb["quiz_id"]] = pct
+    return {"class_no": class_no, "quizzes": quizzes, "students": students}
+
+def build_class_report_pdf(class_no):
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_RIGHT
+    import tempfile, statistics as _st
+    from datetime import datetime as _dt
+    data = class_report_data(class_no)
+    quizzes = data["quizzes"]; students = data["students"]
+    if not students:
+        return None
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle("h1", parent=styles["Heading1"], fontSize=16, textColor=colors.HexColor("#1a3a6b"), spaceAfter=4)
+    small = ParagraphStyle("small", parent=styles["Normal"], fontSize=8, textColor=colors.grey)
+    _pf = _ensure_persian_font()
+    namecell = ParagraphStyle("namecell", parent=styles["Normal"], fontSize=8, leading=11,
+                              fontName=(_pf or "Helvetica"), alignment=(TA_RIGHT if _pf else 0))
+    hcell = ParagraphStyle("hcell", parent=styles["Normal"], fontSize=7.5, leading=9, textColor=colors.white)
+    wide = len(quizzes) > 5
+    pagesize = landscape(A4) if wide else A4
+    path = os.path.join(tempfile.gettempdir(), "class_report_%s.pdf" % class_no.replace(" ", "_"))
+    doc = SimpleDocTemplate(path, pagesize=pagesize, topMargin=12*mm, bottomMargin=12*mm,
+                            leftMargin=10*mm, rightMargin=10*mm)
+    story = [Paragraph("Class Report - " + class_no, h1),
+             Paragraph("Generated: " + _dt.now().strftime("%Y-%m-%d %H:%M"), small),
+             Spacer(1, 6)]
+    header = ["#", Paragraph("Name", hcell), "Telegram ID"]
+    for q in quizzes:
+        header.append(Paragraph(q["title"], hcell))
+    header.append(Paragraph("Average", hcell))
+    rows = [header]
+    ranked = []
+    for tid, st in students.items():
+        vals = list(st["scores"].values())
+        avg = round(_st.mean(vals)) if vals else 0
+        ranked.append((tid, st, avg))
+    ranked.sort(key=lambda x: x[2], reverse=True)
+    for i, (tid, st, avg) in enumerate(ranked, 1):
+        row = [str(i), Paragraph(_fa(st["name"] or "-"), namecell), str(tid)]
+        for q in quizzes:
+            if q["id"] in st["scores"]:
+                row.append(str(st["scores"][q["id"]]) + "%")
+            else:
+                row.append("X")
+        row.append(str(avg) + "%")
+        rows.append(row)
+    nq = len(quizzes)
+    base_w = (landscape(A4)[0] if wide else A4[0])
+    qcol = (base_w - 20*mm - 8*mm - 34*mm - 22*mm - 16*mm) / max(nq,1)
+    qcol = max(qcol, 14*mm)
+    col_widths = [8*mm, 34*mm, 22*mm] + [qcol]*nq + [16*mm]
+    t = Table(rows, colWidths=col_widths, repeatRows=1)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#2a5da3")),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+        ("FONTSIZE", (0,0), (-1,-1), 8),
+        ("GRID", (0,0), (-1,-1), 0.3, colors.HexColor("#cccccc")),
+        ("ALIGN", (3,1), (-1,-1), "CENTER"),
+        ("ALIGN", (0,0), (0,-1), "CENTER"),
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f2f6fc")]),
+        ("BACKGROUND", (-1,1), (-1,-1), colors.HexColor("#eef4ff")),
+        ("TOPPADDING", (0,0), (-1,-1), 3), ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 6))
+    story.append(Paragraph("X = student has not taken that exam. Percentages are out of 100.", small))
+    doc.build(story)
+    return path
 
 def quiz_sessions_list(quiz_id):
     """لیست جلسه‌های یک آزمون (هر فعال‌سازی) با تعداد پاسخ و بازه‌ی زمانی."""
@@ -6852,7 +6949,7 @@ async def api_quiz_teacher_list(request):
     user = m_api_user_from_request(data)
     if not user or user["id"] != TEACHER_ID:
         return web.json_response({"error": "teacher_only"}, status=403)
-    return web.json_response({"quizzes": quiz_list_all(), "suggested_code": quiz_gen_code()})
+    return web.json_response({"quizzes": quiz_list_all(), "suggested_code": quiz_gen_code(), "classes": QUIZ_CLASSES})
 
 async def api_quiz_teacher_activate(request):
     from aiohttp import web
@@ -6862,15 +6959,18 @@ async def api_quiz_teacher_activate(request):
         return web.json_response({"error": "teacher_only"}, status=403)
     quiz_id = data.get("quiz_id")
     code = str(data.get("code", "")).strip() or quiz_gen_code()
+    klass = str(data.get("class_no", "")).strip()[:40]
+    if not klass:
+        return web.json_response({"error": "need_class"}, status=400)
     try:
         conn = get_db(); cur = conn.cursor()
         # فقط یک آزمون هم‌زمان فعال: اول همه رو غیرفعال کن
         cur.execute("UPDATE quizzes SET is_active=FALSE WHERE id<>%s", (quiz_id,))
-        # جلسه‌ی جدید: شماره‌ی جلسه یکی زیاد می‌شه
-        cur.execute("""UPDATE quizzes SET is_active=TRUE, access_code=%s,
-                       current_session=COALESCE(current_session,0)+1 WHERE id=%s""", (code, quiz_id))
+        # جلسه‌ی جدید: شماره‌ی جلسه یکی زیاد می‌شه + کلاس ذخیره می‌شه
+        cur.execute("""UPDATE quizzes SET is_active=TRUE, access_code=%s, active_class=%s,
+                       current_session=COALESCE(current_session,0)+1 WHERE id=%s""", (code, klass, quiz_id))
         conn.commit(); cur.close(); conn.close()
-        return web.json_response({"ok": True, "code": code})
+        return web.json_response({"ok": True, "code": code, "class_no": klass})
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
@@ -6918,6 +7018,57 @@ def _quiz_active_by_code(code):
 QUIZ_STUDENT_SESSIONS = {}
 _PTB_APP = None  # رفرنس به اپلیکیشن تلگرام برای ارسال فایل از web endpoint
 
+async def api_quiz_student_classes(request):
+    """لیست کلاس‌ها برای دانشجو."""
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    return web.json_response({"classes": QUIZ_CLASSES})
+
+async def api_quiz_student_class_exams(request):
+    """وضعیت همه‌ی آزمون‌ها برای یک کلاس مشخص (باز/برگزارشده/قفل)."""
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user:
+        return web.json_response({"error": "auth_failed"}, status=401)
+    klass = str(data.get("class_no", "")).strip()[:40]
+    if not klass:
+        return web.json_response({"error": "need_class"}, status=400)
+    out = []
+    try:
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""SELECT id, title, is_active, active_class,
+                       (SELECT COUNT(*) FROM quiz_questions WHERE quiz_id=quizzes.id) AS nq
+                       FROM quizzes ORDER BY id""")
+        quizzes = cur.fetchall()
+        for q in quizzes:
+            # آیا این آزمون برای این کلاس قبلاً برگزار شده؟ (سابمیشن از این کلاس)
+            cur.execute("""SELECT COUNT(*) AS c FROM quiz_submissions
+                           WHERE quiz_id=%s AND class_no=%s""", (q["id"], klass))
+            held = cur.fetchone()["c"] > 0
+            # آیا این دانشجو خودش داده؟
+            cur.execute("""SELECT COUNT(*) AS c FROM quiz_submissions
+                           WHERE quiz_id=%s AND class_no=%s AND telegram_id=%s""",
+                        (q["id"], klass, user["id"]))
+            mine = cur.fetchone()["c"] > 0
+            open_now = bool(q["is_active"]) and (q["active_class"] == klass)
+            if open_now:
+                status = "open"
+            elif held:
+                status = "held"
+            else:
+                status = "locked"
+            out.append({"quiz_id": q["id"], "title": q["title"], "nq": q["nq"],
+                        "status": status, "done_by_me": mine})
+        cur.close(); conn.close()
+    except Exception as e:
+        logger.error("class_exams error: " + str(e))
+        return web.json_response({"error": str(e)}, status=500)
+    return web.json_response({"class_no": klass, "exams": out})
+
 async def api_quiz_student_enter(request):
     from aiohttp import web
     data = await request.json()
@@ -6958,6 +7109,9 @@ async def api_quiz_student_start(request):
     qz = _quiz_active_by_code(code)
     if not qz:
         return web.json_response({"error": "bad_code"}, status=404)
+    # آزمون باید برای همین کلاس فعال باشه
+    if qz.get("active_class") and class_no and qz.get("active_class") != class_no:
+        return web.json_response({"error": "wrong_class"}, status=409)
     full = quiz_get(qz["id"])
     pub = []
     for q in full["questions"]:
@@ -6971,16 +7125,31 @@ async def api_quiz_student_start(request):
     QUIZ_STUDENT_SESSIONS[uid] = {"quiz_id": qz["id"], "started_at": _t.time(),
         "name": name, "class_no": class_no, "duration_sec": qz["duration_min"] * 60}
     return web.json_response({"quiz_id": qz["id"], "title": qz["title"],
-        "questions": pub, "duration_sec": qz["duration_min"] * 60, "watermark": str(uid)})
+        "questions": pub, "duration_sec": qz["duration_min"] * 60, "watermark": str(uid),
+        "seconds_per_q": qz.get("seconds_per_q", 60)})
 
 def _quiz_ai_check(question, correct_answer, given):
     """فقط برای needs_ai: آیا جواب دانشجو درسته؟ → True/False"""
     prompt = (
-        "You are grading one fill-in-the-blank English answer. Be fair: accept any grammatically "
-        "correct answer that fits, including valid alternatives.\n"
-        "Question: " + question + "\n"
-        "Model answer(s): " + correct_answer + "\n"
-        "Student wrote: " + given + "\n"
+        "You are an English teacher grading ONE student answer. Accept ANY answer that is fully "
+        "grammatically correct and has the same meaning as the model answer(s). Be fair to all "
+        "valid variations, but do NOT accept grammatically wrong answers.\n\n"
+        "General rules:\n"
+        "- Ignore differences in capitalization, extra spaces, and a missing final period.\n"
+        "- Contractions equal their full forms (don't = do not, it's = it is).\n\n"
+        "If the task is combining two sentences with a relative pronoun, ALSO apply these rules:\n"
+        "- In DEFINING clauses, 'that', 'which', 'who' are interchangeable where appropriate; "
+        "'that' may also replace 'where'/'when' (e.g. 'the house that I lived in' = 'the house where I lived').\n"
+        "- In a DEFINING clause where the relative pronoun is the OBJECT, the student MAY omit it "
+        "(e.g. 'the man I met' is correct, same as 'the man who/whom I met').\n"
+        "- 'whom' is correct ONLY for a person used as an OBJECT. 'whom' for a subject or for a thing is WRONG.\n"
+        "- NON-DEFINING clauses (extra information, usually a name or unique thing) MUST be set off with "
+        "commas. If the model answer uses commas and the student omits the necessary commas, mark it WRONG. "
+        "Also, 'that' cannot be used and the pronoun cannot be omitted in non-defining clauses.\n"
+        "- The combined sentence must keep the original meaning and include all key information.\n\n"
+        "Question/Task:\n" + question + "\n\n"
+        "Model answer(s) (any one is full marks):\n" + correct_answer + "\n\n"
+        "Student wrote:\n" + given + "\n\n"
         "Reply with ONLY one word: CORRECT or WRONG."
     )
     try:
@@ -7108,6 +7277,8 @@ async def start_web_server(app_ptb):
     # آزمون کلاسی
     web_app.router.add_get("/quiz", api_quiz_index)
     web_app.router.add_post("/api/quiz/whoami", api_quiz_whoami)
+    web_app.router.add_post("/api/quiz/student/classes", api_quiz_student_classes)
+    web_app.router.add_post("/api/quiz/student/class_exams", api_quiz_student_class_exams)
     web_app.router.add_post("/api/quiz/student/enter", api_quiz_student_enter)
     web_app.router.add_post("/api/quiz/student/start", api_quiz_student_start)
     web_app.router.add_post("/api/quiz/student/submit", api_quiz_student_submit)
@@ -7548,6 +7719,39 @@ async def quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def classreport_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != TEACHER_ID:
+        await update.message.reply_text("\U0001F6AB این بخش فقط برای معلم است.")
+        return
+    rows = [[InlineKeyboardButton(c, callback_data="clsrep_" + c)] for c in QUIZ_CLASSES]
+    await update.message.reply_text("\U0001F4CA گزارش کدوم کلاس؟",
+        reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def class_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id != TEACHER_ID:
+        await query.edit_message_text("\U0001F6AB فقط معلم.")
+        return
+    class_no = query.data.replace("clsrep_", "")
+    await query.edit_message_text("\u23F3 ...")
+    try:
+        path = build_class_report_pdf(class_no)
+        if not path:
+            await query.edit_message_text("برای این کلاس هنوز نتیجه‌ای نیست.")
+            return
+        with open(path, "rb") as f:
+            await context.bot.send_document(chat_id=query.from_user.id, document=f,
+                filename="class_report.pdf", caption="\U0001F4CA گزارش کلاس " + class_no)
+        try: os.remove(path)
+        except Exception: pass
+        await query.edit_message_text("\u2705 فرستاده شد.")
+    except Exception as e:
+        logger.error("class report error: " + str(e))
+        await query.edit_message_text("خطا: " + str(e))
+
+
 async def quizreport_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """گزارش جامع یک آزمون کلاسی (PDF انگلیسی) — فقط معلم."""
     if update.effective_user.id != TEACHER_ID:
@@ -7731,6 +7935,8 @@ def main():
     app.add_handler(CommandHandler("vmstats", vmstats_cmd))
     app.add_handler(CommandHandler("quiz", quiz_cmd))
     app.add_handler(CommandHandler("quizreport", quizreport_cmd))
+    app.add_handler(CommandHandler("classreport", classreport_cmd))
+    app.add_handler(CallbackQueryHandler(class_report_callback, pattern=r"^clsrep_"))
     app.add_handler(CallbackQueryHandler(quiz_report_callback, pattern=r"^qreport_"))
     app.add_handler(CallbackQueryHandler(quiz_report_session_callback, pattern=r"^qrep_\d+_\d+$"))
     app.add_handler(CallbackQueryHandler(quiz_report_all_callback, pattern=r"^qrepall_\d+$"))
