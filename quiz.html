@@ -79,6 +79,13 @@
   .watermark span{ position:absolute; font-size:15px; color:#fff; white-space:nowrap; transform:rotate(-30deg); }
   .resbig{ font-size:46px; font-weight:800; text-align:center; margin:10px 0; }
   .resbig.good{ color:var(--green); } .resbig.mid{ color:var(--gold); } .resbig.low{ color:var(--red); }
+
+  .rev-item{ background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; margin-bottom:8px; }
+  .rev-q{ font-size:12.5px; color:var(--text); margin-bottom:5px; direction:ltr; text-align:left; }
+  .rev-line{ font-size:12px; direction:ltr; text-align:left; }
+  .rev-ok{ color:var(--green); } .rev-bad{ color:var(--red); }
+  .rev-correct{ color:var(--gold); }
+  .rev-head{ font-size:14px; font-weight:700; color:var(--gold); margin:12px 0 8px; }
 </style>
 </head>
 <body>
@@ -159,7 +166,8 @@
       <div class="resbig" id="r-score">0</div>
       <div style="font-size:13px;color:var(--dim)" id="r-detail">—</div>
     </div>
-    <div class="msg">✅ آزمونت ثبت شد. نتیجه و فایل کامل به‌زودی برات میاد.</div>
+    <div class="msg" style="font-size:12px">✅ آزمونت ثبت شد. کلید جواب کامل هم برات فرستاده می‌شه.</div>
+    <div id="r-review"></div>
   </div>
 </div>
 
@@ -463,6 +471,7 @@ async function doSubmit(){
     const el=document.getElementById('r-score');
     el.textContent=faN(sc); el.className='resbig '+(sc>=70?'good':(sc>=50?'mid':'low'));
     document.getElementById('r-detail').textContent=faN(r.score)+' از '+faN(r.total)+' درست';
+    renderReview(r.details||[]);
     show('screen-result');
   }catch(e){
     alert('خطا در ثبت: '+e.message);
@@ -472,6 +481,24 @@ async function doSubmit(){
 }
 
 /* ---------- boot ---------- */
+function renderReview(items){
+  var box=document.getElementById('r-review');
+  if(!items.length){ box.innerHTML=''; return; }
+  var wrong=items.filter(function(it){return !it.ok;});
+  var html='<div class="rev-head">جواب‌های تو ('+faN(wrong.length)+' غلط)</div>';
+  items.forEach(function(it){
+    var ok=it.ok;
+    var mark=ok?'✅':'❌';
+    var given=(it.given||'').trim()||'—';
+    var line='<div class="rev-item"><div class="rev-q">'+mark+' '+esc(it.question)+'</div>'+
+      '<div class="rev-line '+(ok?'rev-ok':'rev-bad')+'">پاسخ تو: '+esc(given)+'</div>';
+    if(!ok){ var corr=(it.correct||'').split('/').join('  •  ');
+      line+='<div class="rev-line rev-correct">درست: '+esc(corr)+'</div>'; }
+    line+='</div>'; html+=line;
+  });
+  box.innerHTML=html;
+}
+
 async function boot(){
   if(!INIT){ document.getElementById('list-body').innerHTML='<div class="err">لطفاً از داخل تلگرام باز کن.</div>'; return; }
   try{
