@@ -86,6 +86,11 @@
   .rev-ok{ color:var(--green); } .rev-bad{ color:var(--red); }
   .rev-correct{ color:var(--gold); }
   .rev-head{ font-size:14px; font-weight:700; color:var(--gold); margin:12px 0 8px; }
+
+  .sched-sec{ margin-top:18px; padding-top:14px; border-top:1px solid var(--line); }
+  .sched-head{ font-size:15px; font-weight:700; color:var(--accent); margin-bottom:10px; }
+  .sched-item{ background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:9px; margin-bottom:7px; font-size:12.5px; }
+  .sched-item .del{ color:var(--red); cursor:pointer; float:left; }
 </style>
 </head>
 <body>
@@ -108,6 +113,25 @@
       <div class="quiz-meta" id="m-meta">—</div>
     </div>
     <div id="m-active-box"></div>
+
+    <div class="sched-sec">
+      <div class="sched-head">⏰ زمان‌بندی خودکار</div>
+      <label class="fld">کلاس:</label>
+      <select class="in" id="sc-class"></select>
+      <label class="fld">تاریخ (ایران):</label>
+      <input class="in" id="sc-date" type="date">
+      <div style="display:flex;gap:8px">
+        <div style="flex:1"><label class="fld">ساعت شروع:</label>
+          <input class="in" id="sc-open" type="time" value="19:00"></div>
+        <div style="flex:1"><label class="fld">ساعت پایان:</label>
+          <input class="in" id="sc-close" type="time" value="21:00"></div>
+      </div>
+      <label class="fld">کد دسترسی:</label>
+      <input class="in codeinput" id="sc-code" maxlength="20">
+      <button class="btn green" onclick="saveSchedule()">➕ ثبت زمان‌بندی</button>
+      <div class="err" id="sc-err"></div>
+      <div id="sc-list" style="margin-top:12px"></div>
+    </div>
   </div>
 
   <!-- مرحله ۱: انتخاب کلاس -->
@@ -218,6 +242,55 @@ function openQuiz(id){
   document.getElementById('m-title').textContent=curQuiz.title;
   document.getElementById('m-meta').textContent=faN(curQuiz.nq)+' سوال · '+faN(curQuiz.duration_min)+' دقیقه · '+faN(curQuiz.nsub)+' پاسخ';
   renderActiveBox();
+  initScheduleUI();
+}
+function initScheduleUI(){
+  var sel=document.getElementById('sc-class');
+  if(sel && !sel.options.length){
+    sel.innerHTML=CLASSES.map(function(c){return '<option value="'+esc(c)+'">'+esc(c)+'</option>';}).join('');
+  }
+  var cin=document.getElementById('sc-code');
+  if(cin && !cin.value){ cin.value=SUGGESTED||''; }
+  loadSchedules();
+}
+async function saveSchedule(){
+  var klass=document.getElementById('sc-class').value;
+  var date=document.getElementById('sc-date').value;
+  var op=document.getElementById('sc-open').value;
+  var cl=document.getElementById('sc-close').value;
+  var code=(document.getElementById('sc-code').value||'').trim();
+  var err=document.getElementById('sc-err'); err.textContent='';
+  if(!klass||!date||!op||!cl){ err.textContent='همه‌ی فیلدها رو پر کن.'; return; }
+  var open_at=date+' '+op, close_at=date+' '+cl;
+  try{
+    var r=await api('/api/quiz/teacher/schedule',{quiz_id:curQuiz.id, class_no:klass, code:code, open_at:open_at, close_at:close_at});
+    document.getElementById('sc-code').value='';
+    loadSchedules();
+  }catch(e){
+    if(e.message==='close_before_open') err.textContent='ساعت پایان باید بعد از شروع باشه.';
+    else if(e.message==='bad_time') err.textContent='فرمت زمان درست نیست.';
+    else err.textContent='خطا: '+e.message;
+  }
+}
+async function loadSchedules(){
+  var box=document.getElementById('sc-list'); if(!box) return;
+  try{
+    var r=await api('/api/quiz/teacher/schedules',{});
+    var list=r.schedules||[];
+    if(!list.length){ box.innerHTML='<div class="msg" style="font-size:12px">زمان‌بندی‌ای ثبت نشده.</div>'; return; }
+    box.innerHTML=list.map(function(s){
+      var st=s.opened?'🟢 باز شده':'⏳ در انتظار';
+      var del=s.opened?'':'<span class="del" onclick="deleteSchedule('+s.id+')">🗑 حذف</span>';
+      return '<div class="sched-item">'+del+
+        '<b>'+esc(s.title||'')+'</b> · '+esc(s.class_no)+'<br>'+
+        '🕐 '+esc(s.open_at)+' تا '+esc(s.close_at)+'<br>'+
+        '🔑 '+esc(s.code)+' · '+st+'</div>';
+    }).join('');
+  }catch(e){ box.innerHTML='<div class="err">خطا: '+e.message+'</div>'; }
+}
+async function deleteSchedule(id){
+  try{ await api('/api/quiz/teacher/schedule_delete',{id:id}); loadSchedules(); }
+  catch(e){ alert('خطا: '+e.message); }
 }
 function renderActiveBox(){
   const box=document.getElementById('m-active-box');

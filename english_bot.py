@@ -292,6 +292,27 @@ def init_db():
         cur.execute("ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS current_session INTEGER DEFAULT 0")
         cur.execute("ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS seconds_per_q INTEGER DEFAULT 60")
         cur.execute("ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS active_class VARCHAR(40)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS class_groups (
+                class_no VARCHAR(40) PRIMARY KEY,
+                chat_id BIGINT,
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS quiz_schedules (
+                id SERIAL PRIMARY KEY,
+                quiz_id INTEGER,
+                class_no VARCHAR(40),
+                access_code VARCHAR(20),
+                open_at TIMESTAMP,
+                close_at TIMESTAMP,
+                opened BOOLEAN DEFAULT FALSE,
+                closed BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cur.execute("ALTER TABLE quiz_schedules ADD COLUMN IF NOT EXISTS reminded BOOLEAN DEFAULT FALSE")
         cur.execute("ALTER TABLE quiz_submissions ADD COLUMN IF NOT EXISTS session_id INTEGER DEFAULT 0")
         conn.commit(); cur.close(); conn.close()
     except Exception as e:
@@ -6958,6 +6979,80 @@ async def api_quiz_teacher_list(request):
         return web.json_response({"error": "teacher_only"}, status=403)
     return web.json_response({"quizzes": quiz_list_all(), "suggested_code": quiz_gen_code(), "classes": QUIZ_CLASSES})
 
+async def api_quiz_teacher_schedule(request):
+    """ذخیره‌ی یک زمان‌بندی آزمون (وقت ایران از اپ میاد، به UTC تبدیل می‌شه)."""
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user or user["id"] != TEACHER_ID:
+        return web.json_response({"error": "forbidden"}, status=403)
+    quiz_id = data.get("quiz_id")
+    klass = str(data.get("class_no", "")).strip()[:40]
+    code = str(data.get("code", "")).strip()[:20] or quiz_gen_code()
+    open_iran = str(data.get("open_at", "")).strip()   # "YYYY-MM-DD HH:MM"
+    close_iran = str(data.get("close_at", "")).strip()
+    if not quiz_id or not klass or not open_iran or not close_iran:
+        return web.json_response({"error": "need_info"}, status=400)
+    try:
+        o = datetime.strptime(open_iran, "%Y-%m-%d %H:%M")
+        c = datetime.strptime(close_iran, "%Y-%m-%d %H:%M")
+    except Exception:
+        return web.json_response({"error": "bad_time"}, status=400)
+    if c <= o:
+        return web.json_response({"error": "close_before_open"}, status=400)
+    o_utc = o - timedelta(minutes=210)
+    c_utc = c - timedelta(minutes=210)
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("""INSERT INTO quiz_schedules (quiz_id, class_no, access_code, open_at, close_at)
+                       VALUES (%s,%s,%s,%s,%s)""", (quiz_id, klass, code, o_utc, c_utc))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+    return web.json_response({"ok": True, "code": code})
+
+async def api_quiz_teacher_schedules(request):
+    """لیست زمان‌بندی‌های آینده."""
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user or user["id"] != TEACHER_ID:
+        return web.json_response({"error": "forbidden"}, status=403)
+    out = []
+    try:
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""SELECT s.id, s.class_no, s.access_code, s.open_at, s.close_at,
+                       s.opened, s.closed, q.title
+                       FROM quiz_schedules s LEFT JOIN quizzes q ON q.id=s.quiz_id
+                       WHERE s.closed=FALSE ORDER BY s.open_at ASC""")
+        for r in cur.fetchall():
+            d = dict(r)
+            oi = d["open_at"] + timedelta(minutes=210)
+            ci = d["close_at"] + timedelta(minutes=210)
+            out.append({"id": d["id"], "class_no": d["class_no"], "title": d["title"],
+                        "code": d["access_code"], "opened": d["opened"],
+                        "open_at": oi.strftime("%Y-%m-%d %H:%M"),
+                        "close_at": ci.strftime("%Y-%m-%d %H:%M")})
+        cur.close(); conn.close()
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+    return web.json_response({"schedules": out})
+
+async def api_quiz_teacher_schedule_delete(request):
+    from aiohttp import web
+    data = await request.json()
+    user = m_api_user_from_request(data)
+    if not user or user["id"] != TEACHER_ID:
+        return web.json_response({"error": "forbidden"}, status=403)
+    sid = data.get("id")
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("DELETE FROM quiz_schedules WHERE id=%s AND opened=FALSE", (sid,))
+        conn.commit(); cur.close(); conn.close()
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+    return web.json_response({"ok": True})
+
 async def api_quiz_teacher_activate(request):
     from aiohttp import web
     data = await request.json()
@@ -7333,6 +7428,9 @@ async def start_web_server(app_ptb):
     web_app.router.add_post("/api/quiz/student/submit", api_quiz_student_submit)
     web_app.router.add_post("/api/quiz/teacher/list", api_quiz_teacher_list)
     web_app.router.add_post("/api/quiz/teacher/activate", api_quiz_teacher_activate)
+    web_app.router.add_post("/api/quiz/teacher/schedule", api_quiz_teacher_schedule)
+    web_app.router.add_post("/api/quiz/teacher/schedules", api_quiz_teacher_schedules)
+    web_app.router.add_post("/api/quiz/teacher/schedule_delete", api_quiz_teacher_schedule_delete)
     web_app.router.add_post("/api/quiz/teacher/deactivate", api_quiz_teacher_deactivate)
     runner = web.AppRunner(web_app)
     await runner.setup()
@@ -7609,6 +7707,156 @@ async def vmstats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append(f"مجموع: {total}/{VM_TARGET_PER_CHAPTER * VM_TOTAL_CHAPTERS}")
     await update.message.reply_text("\n".join(lines))
 
+
+def cg_save_group(class_no, chat_id):
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("""INSERT INTO class_groups (class_no, chat_id, updated_at)
+                       VALUES (%s,%s,NOW())
+                       ON CONFLICT (class_no) DO UPDATE SET
+                         chat_id=EXCLUDED.chat_id, updated_at=NOW()""", (class_no, chat_id))
+        conn.commit(); cur.close(); conn.close()
+        return True
+    except Exception as e:
+        logger.error("cg_save_group error: " + str(e))
+        return False
+
+def cg_get_group(class_no):
+    try:
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT chat_id FROM class_groups WHERE class_no=%s", (class_no,))
+        row = cur.fetchone(); cur.close(); conn.close()
+        return row[0] if row else None
+    except Exception as e:
+        logger.error("cg_get_group error: " + str(e))
+        return None
+
+async def setgroup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """توی گروه کلاس زده می‌شه تا آیدی گروه ثبت بشه — فقط معلم."""
+    if update.effective_user.id != TEACHER_ID:
+        return
+    chat = update.effective_chat
+    if chat.type not in ("group", "supergroup"):
+        await update.message.reply_text("\u26A0\uFE0F \u0627\u06cc\u0646 \u062f\u0633\u062a\u0648\u0631 \u0631\u0648 \u0628\u0627\u06cc\u062f \u062f\u0627\u062e\u0644 \u06af\u0631\u0648\u0647 \u06a9\u0644\u0627\u0633 \u0628\u0632\u0646\u06cc.")
+        return
+    # آیدی گروه رو موقت نگه دار و کلاس رو بپرس
+    context.user_data["setgroup_chat_id"] = chat.id
+    rows = [[InlineKeyboardButton(c, callback_data="setg_" + c)] for c in QUIZ_CLASSES]
+    await update.message.reply_text(
+        "\U0001F4CD \u0627\u06cc\u0646 \u06af\u0631\u0648\u0647 \u0628\u0631\u0627\u06cc \u06a9\u062f\u0648\u0645 \u06a9\u0644\u0627\u0633\u0647\u061f",
+        reply_markup=InlineKeyboardMarkup(rows))
+
+async def setgroup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id != TEACHER_ID:
+        return
+    class_no = query.data.replace("setg_", "")
+    chat_id = context.user_data.get("setgroup_chat_id")
+    if not chat_id:
+        chat_id = query.message.chat.id
+    if cg_save_group(class_no, chat_id):
+        await query.edit_message_text("\u2705 \u0627\u06cc\u0646 \u06af\u0631\u0648\u0647 \u0628\u0647\u200c\u0639\u0646\u0648\u0627\u0646 \u06af\u0631\u0648\u0647 \u06a9\u0644\u0627\u0633 " + class_no + " \u062b\u0628\u062a \u0634\u062f.")
+    else:
+        await query.edit_message_text("\u062e\u0637\u0627 \u062f\u0631 \u062b\u0628\u062a \u06af\u0631\u0648\u0647.")
+
+IRAN_OFFSET_MIN = 210  # UTC+3:30
+
+def iran_to_utc(dt_iran):
+    """یک datetime ساده به وقت ایران رو به UTC ساده تبدیل می‌کنه."""
+    return dt_iran - timedelta(minutes=IRAN_OFFSET_MIN)
+
+def utc_now_naive():
+    return datetime.utcnow()
+
+async def quiz_schedule_worker(context: ContextTypes.DEFAULT_TYPE):
+    """هر دقیقه: آزمون‌های زمان‌بندی‌شده رو باز/بسته می‌کنه و به گروه خبر می‌ده."""
+    try:
+        now = utc_now_naive()
+        now_iran = now + timedelta(minutes=IRAN_OFFSET_MIN)
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        # ── یادآوری صبح (۹ صبح ایران، روزِ آزمون) ──
+        cur.execute("""SELECT * FROM quiz_schedules
+                       WHERE reminded=FALSE AND opened=FALSE AND closed=FALSE""")
+        for sch in [dict(r) for r in cur.fetchall()]:
+            open_iran = sch["open_at"] + timedelta(minutes=IRAN_OFFSET_MIN)
+            # همون روزِ آزمون، و ساعت ایران بین ۹ صبح تا لحظه‌ی شروع
+            if (open_iran.date() == now_iran.date() and now_iran.hour >= 9
+                    and now_iran < open_iran):
+                cur.execute("SELECT title FROM quizzes WHERE id=%s", (sch["quiz_id"],))
+                tr = cur.fetchone(); title = tr["title"] if tr else "Exam"
+                cur.execute("SELECT chat_id FROM class_groups WHERE class_no=%s", (sch["class_no"],))
+                gr = cur.fetchone()
+                if gr and gr["chat_id"]:
+                    close_iran = sch["close_at"] + timedelta(minutes=IRAN_OFFSET_MIN)
+                    msg = ("\U0001F31E صبح بخیر! امروز آزمون دارید 📝\n\n"
+                           "\U0001F4DA مبحث: " + title + "\n"
+                           "\U0001F511 کد دسترسی: " + str(sch["access_code"]) + "\n"
+                           "\U0001F550 ساعت شروع: " + open_iran.strftime("%H:%M") + "\n"
+                           "\U0001F55A ساعت پایان: " + close_iran.strftime("%H:%M") + "\n\n"
+                           "آماده باشید! 🍀")
+                    try:
+                        await context.bot.send_message(chat_id=gr["chat_id"], text=msg)
+                    except Exception as e:
+                        logger.error("morning reminder error: " + str(e))
+                cur.execute("UPDATE quiz_schedules SET reminded=TRUE WHERE id=%s", (sch["id"],))
+                conn.commit()
+        # ── باز کردن آزمون‌هایی که وقتشون رسیده ──
+        cur.execute("""SELECT * FROM quiz_schedules
+                       WHERE opened=FALSE AND open_at<=%s ORDER BY open_at ASC""", (now,))
+        to_open = [dict(r) for r in cur.fetchall()]
+        for sch in to_open:
+            qid = sch["quiz_id"]; klass = sch["class_no"]; code = sch["access_code"]
+            # فعال‌سازی: بقیه رو غیرفعال کن، این یکی رو فعال کن
+            cur.execute("UPDATE quizzes SET is_active=FALSE WHERE id<>%s", (qid,))
+            cur.execute("""UPDATE quizzes SET is_active=TRUE, access_code=%s, active_class=%s,
+                           current_session=COALESCE(current_session,0)+1 WHERE id=%s""",
+                        (code, klass, qid))
+            cur.execute("UPDATE quiz_schedules SET opened=TRUE WHERE id=%s", (sch["id"],))
+            conn.commit()
+            # عنوان آزمون
+            cur.execute("SELECT title FROM quizzes WHERE id=%s", (qid,))
+            trow = cur.fetchone(); title = trow["title"] if trow else "Exam"
+            # پیام به گروه کلاس
+            cur.execute("SELECT chat_id FROM class_groups WHERE class_no=%s", (klass,))
+            grow = cur.fetchone()
+            if grow and grow["chat_id"]:
+                close_iran = sch["close_at"] + timedelta(minutes=IRAN_OFFSET_MIN)
+                open_iran = sch["open_at"] + timedelta(minutes=IRAN_OFFSET_MIN)
+                msg = ("\U0001F4E2 \u0622\u0632\u0645\u0648\u0646 \u0634\u0631\u0648\u0639 \u0634\u062f!\n\n"
+                       "\U0001F4DA \u0645\u0628\u062d\u062b: " + title + "\n"
+                       "\U0001F511 \u06a9\u062f \u062f\u0633\u062a\u0631\u0633\u06cc: " + str(code) + "\n"
+                       "\U0001F550 \u0634\u0631\u0648\u0639: " + open_iran.strftime("%H:%M") + "\n"
+                       "\U0001F55A \u067e\u0627\u06cc\u0627\u0646: " + close_iran.strftime("%H:%M") + "\n\n"
+                       "\u0645\u0648\u0641\u0642 \u0628\u0627\u0634\u06cc\u062f! \U0001F340")
+                try:
+                    await context.bot.send_message(chat_id=grow["chat_id"], text=msg)
+                except Exception as e:
+                    logger.error("schedule group msg error: " + str(e))
+        # ── بستن آزمون‌هایی که وقت پایانشون رسیده ──
+        cur.execute("""SELECT * FROM quiz_schedules
+                       WHERE opened=TRUE AND closed=FALSE AND close_at<=%s""", (now,))
+        to_close = [dict(r) for r in cur.fetchall()]
+        for sch in to_close:
+            cur.execute("UPDATE quizzes SET is_active=FALSE WHERE id=%s", (sch["quiz_id"],))
+            cur.execute("UPDATE quiz_schedules SET closed=TRUE WHERE id=%s", (sch["id"],))
+            conn.commit()
+            # پیام پایان آزمون به گروه کلاس
+            cur.execute("SELECT title FROM quizzes WHERE id=%s", (sch["quiz_id"],))
+            tr = cur.fetchone(); title = tr["title"] if tr else "Exam"
+            cur.execute("SELECT chat_id FROM class_groups WHERE class_no=%s", (sch["class_no"],))
+            gr = cur.fetchone()
+            if gr and gr["chat_id"]:
+                msg = ("\U0001F3C1 آزمون به پایان رسید!\n\n"
+                       "\U0001F4DA مبحث: " + title + "\n"
+                       "دیگه نمی‌تونید وارد بشید. نتایج به‌زودی اعلام می‌شه. خسته نباشید! 💪")
+                try:
+                    await context.bot.send_message(chat_id=gr["chat_id"], text=msg)
+                except Exception as e:
+                    logger.error("close group msg error: " + str(e))
+        cur.close(); conn.close()
+    except Exception as e:
+        logger.error("quiz_schedule_worker error: " + str(e))
 
 async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """پیام همگانی به همه‌ی کاربرها — فقط معلم. روش: /broadcast متن پیام"""
@@ -7991,6 +8239,8 @@ def main():
     app.add_handler(CallbackQueryHandler(quiz_report_all_callback, pattern=r"^qrepall_\d+$"))
     app.add_handler(CallbackQueryHandler(quiz_answerkey_callback, pattern=r"^qkey_"))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
+    app.add_handler(CommandHandler("setgroup", setgroup_cmd))
+    app.add_handler(CallbackQueryHandler(setgroup_callback, pattern=r"^setg_"))
     app.add_handler(MessageHandler(filters.PHOTO, champion_photo_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -8014,6 +8264,16 @@ def main():
         logger.info("Daily leaderboard report scheduled for 16:30 UTC (20:00 Iran).")
     except Exception as e:
         logger.error("Could not schedule daily report: " + str(e))
+    # چک زمان‌بندی آزمون‌ها — هر ۶۰ ثانیه
+    try:
+        app.job_queue.run_repeating(
+            quiz_schedule_worker,
+            interval=60, first=15,
+            name="quiz_schedule_worker",
+        )
+        logger.info("Quiz schedule worker scheduled (every 60s).")
+    except Exception as e:
+        logger.error("Could not schedule quiz worker: " + str(e))
     logger.info("Bot is running...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
