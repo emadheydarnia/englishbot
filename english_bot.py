@@ -7002,13 +7002,34 @@ async def api_quiz_teacher_schedule(request):
         return web.json_response({"error": "close_before_open"}, status=400)
     o_utc = o - timedelta(minutes=210)
     c_utc = c - timedelta(minutes=210)
+    title = "Exam"; group_chat = None
     try:
         conn = get_db(); cur = conn.cursor()
         cur.execute("""INSERT INTO quiz_schedules (quiz_id, class_no, access_code, open_at, close_at)
                        VALUES (%s,%s,%s,%s,%s)""", (quiz_id, klass, code, o_utc, c_utc))
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.execute("SELECT title FROM quizzes WHERE id=%s", (quiz_id,))
+        tr = cur.fetchone()
+        if tr: title = tr[0]
+        cur.execute("SELECT chat_id FROM class_groups WHERE class_no=%s", (klass,))
+        gr = cur.fetchone()
+        if gr: group_chat = gr[0]
+        cur.close(); conn.close()
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
+    # پیام اطلاع‌رسانی به گروه (بدون کد — کد صبح ارسال می‌شه)
+    if group_chat and _PTB_APP:
+        wd = ["دوشنبه","سه‌شنبه","چهارشنبه","پنج‌شنبه","جمعه","شنبه","یکشنبه"]
+        day_name = wd[o.weekday()]
+        msg = ("📅 آزمون جدید زمان‌بندی شد!\n\n"
+               "📚 مبحث: " + title + "\n"
+               "🗓 روز: " + day_name + " " + o.strftime("%Y-%m-%d") + "\n"
+               "🕐 ساعت: " + o.strftime("%H:%M") + " تا " + c.strftime("%H:%M") + "\n\n"
+               "🔑 کد دسترسی رو صبح همون روز براتون ارسال می‌کنم. 🍀")
+        try:
+            await _PTB_APP.bot.send_message(chat_id=group_chat, text=msg)
+        except Exception as e:
+            logger.error("schedule announce error: " + str(e))
     return web.json_response({"ok": True, "code": code})
 
 async def api_quiz_teacher_schedules(request):
@@ -7066,8 +7087,12 @@ async def api_quiz_teacher_activate(request):
         return web.json_response({"error": "need_class"}, status=400)
     try:
         conn = get_db(); cur = conn.cursor()
-        # فقط یک آزمون هم‌زمان فعال: اول همه رو غیرفعال کن
-        cur.execute("UPDATE quizzes SET is_active=FALSE WHERE id<>%s", (quiz_id,))
+        # کد نباید با یه آزمون فعالِ دیگه یکی باشه (تا قاطی نشن)
+        cur.execute("SELECT id FROM quizzes WHERE is_active=TRUE AND access_code=%s AND id<>%s", (code, quiz_id))
+        if cur.fetchone():
+            cur.close(); conn.close()
+            return web.json_response({"error": "code_in_use"}, status=409)
+        # چند آزمون می‌تونن هم‌زمان فعال باشن (هر کلاس کد جدا). فقط این آزمون فعال می‌شه.
         # جلسه‌ی جدید: شماره‌ی جلسه یکی زیاد می‌شه + کلاس ذخیره می‌شه
         cur.execute("""UPDATE quizzes SET is_active=TRUE, access_code=%s, active_class=%s,
                        current_session=COALESCE(current_session,0)+1 WHERE id=%s""", (code, klass, quiz_id))
@@ -7807,8 +7832,13 @@ async def quiz_schedule_worker(context: ContextTypes.DEFAULT_TYPE):
         to_open = [dict(r) for r in cur.fetchall()]
         for sch in to_open:
             qid = sch["quiz_id"]; klass = sch["class_no"]; code = sch["access_code"]
-            # فعال‌سازی: بقیه رو غیرفعال کن، این یکی رو فعال کن
-            cur.execute("UPDATE quizzes SET is_active=FALSE WHERE id<>%s", (qid,))
+            # اگه کد با یه آزمون فعالِ دیگه تداخل داره، یکتاش کن
+            cur.execute("SELECT id FROM quizzes WHERE is_active=TRUE AND access_code=%s AND id<>%s", (code, qid))
+            if cur.fetchone():
+                import random as _rnd
+                code = str(code) + str(_rnd.randint(1, 9))
+                cur.execute("UPDATE quiz_schedules SET access_code=%s WHERE id=%s", (code, sch["id"]))
+            # فعال‌سازی این آزمون (بقیه دست‌نخورده می‌مونن — چند کلاس هم‌زمان ممکنه)
             cur.execute("""UPDATE quizzes SET is_active=TRUE, access_code=%s, active_class=%s,
                            current_session=COALESCE(current_session,0)+1 WHERE id=%s""",
                         (code, klass, qid))

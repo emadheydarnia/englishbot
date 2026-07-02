@@ -315,7 +315,10 @@ async function activate(){
   if(!klass){ alert('کلاس رو انتخاب کن.'); return; }
   try{ const r=await api('/api/quiz/teacher/activate',{quiz_id:curQuiz.id, code:code, class_no:klass});
     curQuiz.is_active=true; curQuiz.access_code=r.code; curQuiz.active_class=r.class_no; renderActiveBox(); 
-  }catch(e){ alert('خطا: '+e.message); }
+  }catch(e){
+    if(e.message==='code_in_use') alert('این کد الان برای یه آزمون فعال دیگه استفاده می‌شه. یه کد دیگه بذار.');
+    else alert('خطا: '+e.message);
+  }
 }
 async function deactivate(){
   try{ await api('/api/quiz/teacher/deactivate',{quiz_id:curQuiz.id});
