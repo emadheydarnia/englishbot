@@ -6996,6 +6996,13 @@ async def api_quiz_teacher_deactivate(request):
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
 
+async def api_champion_index(request):
+    from aiohttp import web
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "champion.html")
+    if os.path.exists(path):
+        return web.FileResponse(path)
+    return web.Response(text="Champion file not found.", status=404)
+
 async def api_quiz_index(request):
     from aiohttp import web
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quiz.html")
@@ -7316,6 +7323,7 @@ async def start_web_server(app_ptb):
     web_app.router.add_post("/api/vm/leaderboard", api_vm_leaderboard)
     # آزمون کلاسی
     web_app.router.add_get("/quiz", api_quiz_index)
+    web_app.router.add_get("/champion", api_champion_index)
     web_app.router.add_post("/api/quiz/whoami", api_quiz_whoami)
     web_app.router.add_post("/api/quiz/student/me", api_quiz_student_me)
     web_app.router.add_post("/api/quiz/student/classes", api_quiz_student_classes)
