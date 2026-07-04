@@ -3737,6 +3737,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["reg_step"] = "name"
             await query.edit_message_text("🎓 اول ثبت‌نامت کنیم!\n\nاسمت رو بنویس:")
             return
+        # زبان رو به فارسی برگردون (اگه قبلاً آلمانی شده بود، بازی‌های فارسی باز شن)
+        try:
+            if u and u.get("language") == "de":
+                save_user(user_id, u.get("name", ""), u.get("student_class", ""), language="fa", phone=u.get("phone", "") or "")
+        except Exception:
+            pass
         await query.edit_message_text("Persian Students\n\nیه گزینه انتخاب کن:", reply_markup=persian_menu_keyboard())
 
     elif data == "lang_german":
