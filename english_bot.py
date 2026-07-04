@@ -3466,6 +3466,9 @@ async def timeout_job(context: ContextTypes.DEFAULT_TYPE):
 # ── Commands ───────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # توی گروه‌ها منوی start رو باز نکن (فقط چت خصوصی)
+    if update.effective_chat and update.effective_chat.type != "private":
+        return
     user_id = update.effective_user.id
     tg_name = update.effective_user.first_name or ""
     log_activity(user_id, tg_name, "", "start", "Bot opened")
@@ -4259,6 +4262,9 @@ Student translates German sentences into English.
 # ── Message handler ────────────────────────────────────────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # توی گروه‌ها به پیام‌های عادی جواب نده (فقط چت خصوصی)
+    if update.effective_chat and update.effective_chat.type != "private":
+        return
     user_id = update.effective_user.id
     state = get_state(context, user_id)
     text = update.message.text.strip()
