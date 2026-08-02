@@ -6557,8 +6557,8 @@ def quiz_import_from_file():
                             (qz["title"], qz.get("duration_min", 20), qz.get("seconds_per_q", 60)))
                 quiz_id = cur.fetchone()[0]
             for i, q in enumerate(qz["questions"], 1):
-                meta = {"context": q.get("context", "")}
-                opts = _qjson.dumps({"options": q.get("options", []), "context": q.get("context", "")})
+                meta = {"context": q.get("context", ""), "full": q.get("full", "")}
+                opts = _qjson.dumps({"options": q.get("options", []), "context": q.get("context", ""), "full": q.get("full", "")})
                 cur.execute("""INSERT INTO quiz_questions
                     (quiz_id, qnum, qtype, question, options, answer, needs_ai)
                     VALUES (%s,%s,%s,%s,%s,%s,%s)""",
@@ -7298,8 +7298,11 @@ async def api_quiz_student_start(request):
             meta = _qjson.loads(q.get("options") or "{}")
         except Exception:
             meta = {}
+        _full = meta.get("full", "")
         pub.append({"qnum": q["qnum"], "qtype": q["qtype"], "question": q["question"],
-                    "options": meta.get("options", []), "context": meta.get("context", "")})
+                    "options": meta.get("options", []), "context": meta.get("context", ""),
+                    "full": _full,
+                    "q_seconds": 120 if _full else 0})
     uid = user["id"]
     QUIZ_STUDENT_SESSIONS[uid] = {"quiz_id": qz["id"], "started_at": _t.time(),
         "name": name, "class_no": class_no, "duration_sec": qz["duration_min"] * 60}

@@ -91,6 +91,8 @@
   .sched-head{ font-size:15px; font-weight:700; color:var(--accent); margin-bottom:10px; }
   .sched-item{ background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:9px; margin-bottom:7px; font-size:12.5px; }
   .sched-item .del{ color:var(--red); cursor:pointer; float:left; }
+
+  .qfull{ background:rgba(255,216,77,0.12); border:1px solid rgba(255,216,77,0.4); border-radius:8px; padding:9px 11px; margin-bottom:9px; font-size:13px; color:var(--text); direction:ltr; text-align:left; line-height:1.7; }
 </style>
 </head>
 <body>
@@ -437,6 +439,7 @@ function renderOneQuestion(){
   document.getElementById('e-warn').textContent='';
   const box=document.getElementById('e-onequestion');
   let html='<div class="qcard">';
+  if(q.full) html+='<div class="qfull">📄 '+esc(q.full)+'</div>';
   if(q.context) html+='<div class="qctx">'+esc(q.context)+'</div>';
   html+='<div class="qtext">'+esc(q.question)+'</div>';
   if(q.qtype==='mc' && q.options && q.options.length){
@@ -468,7 +471,9 @@ function pickMC(qn, el, val){
 
 function startQTimer(){
   if(examTimer) clearInterval(examTimer);
-  examLeft=Q_SECONDS; qExtra=false; updTimer();
+  var q=examData.questions[curIdx];
+  var secs=(q && q.q_seconds) ? q.q_seconds : Q_SECONDS;
+  examLeft=secs; qExtra=false; updTimer();
   examTimer=setInterval(()=>{
     examLeft--; updTimer();
     if(examLeft<=0){
