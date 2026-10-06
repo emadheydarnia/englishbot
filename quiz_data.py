@@ -419,6 +419,87 @@ QUIZZES["exam8"] = {
     ],
 }
 
+QUIZZES["exam9"] = {
+    "title": "Exam 9 (FANBOYS conjunctions)",
+    "duration_min": 20,
+    "questions": [
+        _q("fill", "I was tired, ____ I went to bed early. (result → so/and/but/or)", "so"),
+        _q("mc", "She wanted to go out, ____ it was raining.", "but", options=["but", "so", "for", "nor"]),
+        _q("fill", "Would you like tea ____ coffee? (choice)", "or"),
+        _q("mc", "He didn't study, ____ he failed the exam.", "so", options=["so", "but", "or", "yet"]),
+        _q("fill", "I like apples ____ oranges. (addition)", "and"),
+        _q("mc", "She is very rich, ____ she is not happy.", "yet", options=["yet", "so", "and", "for"]),
+        _q("fill", "Hurry up, ____ you'll miss the bus. (or = otherwise)", "or"),
+        _q("mc", "He was hungry, ____ he made a sandwich.", "so", options=["so", "but", "nor", "yet"]),
+        _q("fill", "I stayed home, ____ I was feeling sick. (reason, formal → for)", "for"),
+        _q("mc", "She doesn't eat meat, ____ does she eat fish.", "nor", options=["nor", "or", "and", "but"]),
+        _q("fill", "We can go to the beach ____ stay at home. (choice)", "or"),
+        _q("mc", "It was late, ____ we decided to go home.", "so", options=["so", "for", "nor", "or"]),
+        _q("fill", "He worked hard, ____ he still didn't pass. (contrast → yet/but)", "yet/but"),
+        _q("mc", "I wanted to call you, ____ I lost my phone.", "but", options=["but", "so", "and", "nor"]),
+        _q("fill", "She loves music ____ dancing. (addition)", "and"),
+        _q("mc", "Be quiet, ____ the baby will wake up.", "or", options=["or", "so", "and", "yet"]),
+        _q("fill", "He didn't come, ____ did he call. (neither... → nor)", "nor"),
+        _q("mc", "The weather was perfect, ____ we went for a walk.", "so", options=["so", "but", "for", "nor"]),
+        _q("fill", "I don't like horror films, ____ does my sister. (negative addition)", "nor"),
+        _q("mc", "She studied all night, ____ she was ready for the test.", "so", options=["so", "but", "or", "nor"]),
+    ],
+}
+
+QUIZZES["exam10"] = {
+    "title": "Exam 10 (contrast connectors)",
+    "duration_min": 20,
+    "questions": [
+        _q("mc", "____ it was raining, we went for a walk.", "Although", options=["Although", "Despite", "However", "Unlike"]),
+        _q("mc", "____ the rain, we went for a walk.", "Despite", options=["Despite", "Although", "However", "Whereas"]),
+        _q("fill", "It was raining. ____ , we went for a walk. (new sentence, needs a comma after)", "However"),
+        _q("mc", "____ his brother, Tom is very tall.", "Unlike", options=["Unlike", "Although", "Despite", "While"]),
+        _q("mc", "She is rich, ____ her sister is poor.", "whereas", options=["whereas", "despite", "however", "in spite of"]),
+        _q("fill", "____ being tired, he finished the race. (connector + -ing)", "Despite/In spite of"),
+        _q("mc", "He is friendly, ____ his brother is quite shy.", "while", options=["while", "despite", "however", "unlike"]),
+        _q("mc", "____ she studied hard, she didn't pass.", "Even though", options=["Even though", "Despite", "In spite of", "Unlike"]),
+        _q("fill", "He was very ill. ____ , he came to work. (new sentence contrast; starts with N)", "Nevertheless/Nonetheless"),
+        _q("mc", "____ the cold weather, they kept playing.", "In spite of", options=["In spite of", "Although", "However", "Whereas"]),
+        _q("mc", "____ cats, dogs are very loyal.", "Unlike", options=["Unlike", "Although", "Despite", "While"]),
+        _q("fill", "Although the food ____ expensive, it wasn't very good. (verb: was)", "was"),
+        _q("mc", "The hotel was cheap. ____ , it was very clean.", "Nonetheless", options=["Nonetheless", "Despite", "Unlike", "Whereas"]),
+        _q("mc", "____ his wealth, he is not happy.", "Despite", options=["Despite", "Although", "However", "Whereas"]),
+        _q("fill", "____ I like coffee, I prefer tea in the evening. (connector + full clause; starts with A)", "Although"),
+        _q("mc", "Some people love winter, ____ others hate it.", "whereas", options=["whereas", "despite", "unlike", "in spite of"]),
+        _q("mc", "She didn't give up. ____ the difficulties, she succeeded.", "Despite", options=["Despite", "Although", "However", "Whereas"]),
+        _q("fill", "It was expensive. ____ , I decided to buy it. (new sentence, starts with H)", "However"),
+        _q("mc", "____ being poor, they were happy.", "Despite", options=["Despite", "Although", "However", "Whereas"]),
+        _q("mc", "He kept working ____ he was exhausted.", "even though", options=["even though", "despite", "in spite of", "however"]),
+    ],
+}
+
+QUIZZES["exam11"] = {
+    "title": "Exam 11 (FANBOYS and contrast - mixed)",
+    "duration_min": 20,
+    "questions": [
+        _q("mc", "He was tired, ____ he kept working. (two clauses, comma + conj)", "but", options=["but", "despite", "however", "although"]),
+        _q("mc", "____ he was tired, he kept working. (start of sentence + clause)", "Although", options=["Although", "But", "Despite", "However"]),
+        _q("mc", "He kept working ____ his tiredness. (+ noun)", "despite", options=["despite", "but", "although", "however"]),
+        _q("fill", "He was tired. ____ , he kept working. (new sentence; starts with H)", "However"),
+        _q("mc", "I wanted to buy it, ____ it was too expensive.", "but", options=["but", "although", "despite", "however"]),
+        _q("mc", "____ the high price, I bought it.", "Despite", options=["Despite", "But", "Although", "So"]),
+        _q("fill", "It started to rain, ____ we went inside. (result, FANBOYS)", "so"),
+        _q("mc", "____ it started to rain, we stayed outside.", "Although", options=["Although", "Despite", "So", "But"]),
+        _q("mc", "She studied hard, ____ she passed easily.", "so", options=["so", "but", "although", "despite"]),
+        _q("fill", "She studied hard. ____ , she failed. (contrast, new sentence; starts with H)", "However"),
+        _q("mc", "He is rich, ____ he is unhappy.", "yet", options=["yet", "despite", "although", "however"]),
+        _q("mc", "____ his wealth, he is unhappy.", "Despite", options=["Despite", "Yet", "But", "However"]),
+        _q("mc", "Would you like tea ____ coffee?", "or", options=["or", "but", "although", "however"]),
+        _q("mc", "I don't like tea, ____ do I like coffee.", "nor", options=["nor", "but", "however", "despite"]),
+        _q("fill", "We can walk, ____ we can take the bus. (choice, FANBOYS)", "or"),
+        _q("mc", "____ being rich, she lives simply.", "Despite", options=["Despite", "Although", "But", "So"]),
+        _q("mc", "He didn't call, ____ he didn't text.", "and", options=["and", "but", "so", "or"]),
+        _q("mc", "The test was hard, ____ everyone passed.", "but", options=["but", "despite", "although", "so"]),
+        _q("fill", "The test was hard. ____ , everyone passed. (new sentence; starts with N, means 'even so')", "Nevertheless/Nonetheless"),
+        _q("mc", "She loves summer, ____ her brother prefers winter.", "whereas", options=["whereas", "so", "but", "despite"]),
+    ],
+}
+
 if __name__ == "__main__":
     for k, v in QUIZZES.items():
         n = len(v['questions'])
